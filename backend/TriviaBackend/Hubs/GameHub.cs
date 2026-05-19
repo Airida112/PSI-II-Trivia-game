@@ -4,26 +4,23 @@ using TriviaBackend.Data;
 using TriviaBackend.Exceptions;
 using TriviaBackend.Models.Entities;
 using TriviaBackend.Models.Enums;
-using System.Collections.Concurrent;
+using TriviaBackend.Models.Records;
 using TriviaBackend.Services.Implementations;
 using TriviaBackend.Services.Interfaces;
-using System.Net.NetworkInformation;
+using TriviaBackend.Services.Interfaces.DB;
+using System.Collections.Concurrent;
 
 namespace TriviaBackend.Hubs
 {
     /// <summary>
-    /// Class for managing player activity and game progression in a match
+    /// Manages player activity and game progression in a match.
     /// </summary>
     public class GameHub : Hub
     {
         private static readonly ConcurrentDictionary<string, GameEngineService> _activeGames = new();
-
         private static readonly ConcurrentDictionary<string, string> _playerGameMap = new();
-
         private static readonly ConcurrentDictionary<string, CancellationTokenSource> _gameTimers = new();
-
         private static readonly ConcurrentDictionary<string, bool> _questionRevealed = new();
-
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<int, string>> _gamePlayerUsernames = new();
 
         private static IHubContext<GameHub>? _staticHubContext;
@@ -31,29 +28,122 @@ namespace TriviaBackend.Hubs
 
         private readonly ILogger<ExceptionHandler> _logger;
         private readonly IServiceProvider _serviceProvider;
+        private readonly IPresenceService _presenceService;
+        private readonly IFriendshipService _friendshipService;
 
-        public GameHub(IServiceProvider serviceProvider,
-            ILogger<ExceptionHandler> logger)
+        public GameHub(
+            IServiceProvider serviceProvider,
+            ILogger<ExceptionHandler> logger,
+            IPresenceService presenceService,
+            IFriendshipService friendshipService)
         {
             _serviceProvider = serviceProvider;
             _logger = logger;
+            _presenceService = presenceService;
+            _friendshipService = friendshipService;
         }
 
-        public static void SetHubContext(IHubContext<GameHub> hubContext)
+        public static void SetHubContext(IHubContext<GameHub> hubContext) => _staticHubContext = hubContext;
+        public static void SetServiceProvider(IServiceProvider serviceProvider) => _staticServiceProvider = serviceProvider;
+
+        public override async Task OnConnectedAsync()
         {
-            _staticHubContext = hubContext;
+            var userId = Context.UserIdentifier;
+            if (!string.IsNullOrEmpty(userId))
+            {
+                _presenceService.SetOnline(userId, Context.ConnectionId);
+                await NotifyFriendsOfStatusChange(userId);
+            }
+            await base.OnConnectedAsync();
         }
 
-        public static void SetServiceProvider(IServiceProvider serviceProvider)
+        public override async Task OnDisconnectedAsync(Exception? exception)
         {
-            _staticServiceProvider = serviceProvider;
+            _logger.LogInformation($"=== OnDisconnectedAsync called for connection {Context.ConnectionId} ===");
+
+            var disconnectingUserId = _presenceService.GetUserIdByConnection(Context.ConnectionId);
+            _presenceService.SetOffline(Context.ConnectionId);
+            if (!string.IsNullOrEmpty(disconnectingUserId))
+                await NotifyFriendsOfStatusChange(disconnectingUserId);
+
+            if (_playerGameMap.TryGetValue(Context.ConnectionId, out var gameId))
+            {
+                _logger.LogInformation($"Connection {Context.ConnectionId} was in game {gameId}");
+
+                if (_activeGames.TryGetValue(gameId, out var gameEngine))
+                {
+                    var players = gameEngine.GetPlayers();
+                    _logger.LogInformation($"Game {gameId} still active with {players.Count} players");
+
+                    await Clients.Group(gameId).SendAsync("PlayerDisconnected", Context.ConnectionId);
+
+                    if (gameEngine.Status == GameStatus.Waiting && players.Count == 1)
+                    {
+                        _logger.LogInformation($"Last player disconnected from waiting game {gameId}, cleaning up");
+
+                        if (_gameTimers.TryRemove(gameId, out var cts))
+                        {
+                            cts.Cancel();
+                            cts.Dispose();
+                        }
+
+                        _activeGames.TryRemove(gameId, out _);
+                        _gamePlayerUsernames.TryRemove(gameId, out _);
+                    }
+                }
+
+                _playerGameMap.TryRemove(Context.ConnectionId, out _);
+            }
+            else
+            {
+                _logger.LogInformation($"Connection {Context.ConnectionId} was not in any game");
+            }
+
+            await base.OnDisconnectedAsync(exception);
         }
 
         /// <summary>
-        /// Create a new game with random Id and initialize in lobby state
+        /// Returns the caller's friend list with live status.
         /// </summary>
-        /// <param name="playerName"></param>
-        /// <returns></returns>
+        public async Task GetFriendList(string userId)
+        {
+            var friends = await _friendshipService.GetFriendsAsync(userId);
+            await Clients.Caller.SendAsync("FriendListUpdated", friends);
+        }
+
+        /// <summary>
+        /// Sends a game lobby invite to an online friend.
+        /// </summary>
+        public async Task SendGameInvite(string gameId, string inviterUserId, string friendUserId)
+        {
+            if (!_activeGames.ContainsKey(gameId))
+            {
+                await Clients.Caller.SendAsync("Error", "Game not found");
+                return;
+            }
+
+            var friends = await _friendshipService.GetFriendsAsync(inviterUserId);
+            var target = friends.FirstOrDefault(f => f.UserId == friendUserId);
+
+            if (target == null)
+            {
+                await Clients.Caller.SendAsync("Error", "Not friends with this user");
+                return;
+            }
+
+            if (target.Status != PlayerStatus.Online)
+            {
+                await Clients.Caller.SendAsync("Error", "Friend is not online or is already in a game");
+                return;
+            }
+
+            await Clients.User(friendUserId)
+                .SendAsync("GameInviteReceived", new GameInvitePayload(inviterUserId, gameId));
+        }
+
+        /// <summary>
+        /// Create a new game with a random Id and initialize it in lobby state.
+        /// </summary>
         public async Task CreateGame(string playerName)
         {
             _logger.LogInformation("=== CreateGame called ===");
@@ -67,7 +157,7 @@ namespace TriviaBackend.Hubs
                 DefaultTimeLimit = 30,
                 QuestionCategories = Enum.GetValues<QuestionCategory>(),
                 MaxDifficulty = DifficultyLevel.Hard,
-                IsTeamMode = false,  // Default to free-for-all
+                IsTeamMode = false,
                 NumberOfTeams = 2
             };
 
@@ -81,18 +171,21 @@ namespace TriviaBackend.Hubs
 
             _gamePlayerUsernames.TryAdd(gameId, new ConcurrentDictionary<int, string>());
 
-            // Add the creator as a player
+            var creatorUserId = Context.UserIdentifier;
+            if (!string.IsNullOrEmpty(creatorUserId))
+            {
+                _presenceService.SetInGame(creatorUserId, gameId);
+                await NotifyFriendsOfStatusChange(creatorUserId);
+            }
+
             var playerId = await JoinGameInternalForCreator(gameId, playerName, gameEngine);
 
             if (_gamePlayerUsernames.TryGetValue(gameId, out var playerDict))
-            {
                 playerDict.TryAdd(playerId, playerName);
-            }
 
             var allCategories = Enum.GetValues<QuestionCategory>().Select(c => c.ToString()).ToArray();
             var allDifficulties = Enum.GetValues<DifficultyLevel>().Select(d => d.ToString()).ToArray();
 
-            // Send GameCreated with team mode info
             await Clients.Caller.SendAsync("GameCreated", new
             {
                 gameId,
@@ -110,17 +203,13 @@ namespace TriviaBackend.Hubs
                 },
                 availableCategories = allCategories,
                 availableDifficulties = allDifficulties,
-                teams = (object?)null  // No teams in free-for-all mode initially
+                teams = (object?)null
             });
         }
 
         /// <summary>
-        /// Assign player to the team before starting the game
+        /// Assigns a player to a specific team before the game starts.
         /// </summary>
-        /// <param name="gameId"></param>
-        /// <param name="playerId"></param>
-        /// <param name="teamId"></param>
-        /// <returns></returns>
         public async Task AssignPlayerToTeam(string gameId, int playerId, int teamId)
         {
             if (!_activeGames.TryGetValue(gameId, out var gameEngine))
@@ -159,16 +248,8 @@ namespace TriviaBackend.Hubs
         }
 
         /// <summary>
-        /// Update game settings in the lobby before starting the game
+        /// Updates game settings while the lobby is still in the waiting state.
         /// </summary>
-        /// <param name="gameId"></param>
-        /// <param name="maxPlayers"></param>
-        /// <param name="questionsPerGame"></param>
-        /// <param name="categories"></param>
-        /// <param name="maxDifficulty"></param>
-        /// <param name="isTeamMode"></param>
-        /// <param name="numberOfTeams"></param>
-        /// <returns></returns>
         public async Task UpdateGameSettings(string gameId, int? maxPlayers = null, int? questionsPerGame = null,
             string[]? categories = null, string? maxDifficulty = null, bool? isTeamMode = null, int? numberOfTeams = null)
         {
@@ -198,15 +279,10 @@ namespace TriviaBackend.Hubs
                     NumberOfTeams = numberOfTeams ?? existingSettings.NumberOfTeams
                 };
 
-                // Validate number of teams
                 if (currentSettings.IsTeamMode && currentSettings.NumberOfTeams < 2)
-                {
                     currentSettings.NumberOfTeams = 2;
-                }
                 if (currentSettings.NumberOfTeams > 6)
-                {
                     currentSettings.NumberOfTeams = 6;
-                }
 
                 if (categories != null && categories.Length > 0)
                 {
@@ -222,36 +298,27 @@ namespace TriviaBackend.Hubs
                 }
 
                 if (!string.IsNullOrEmpty(maxDifficulty) && Enum.TryParse<DifficultyLevel>(maxDifficulty, true, out var difficulty))
-                {
                     currentSettings.MaxDifficulty = difficulty;
-                }
                 else
-                {
                     currentSettings.MaxDifficulty = existingSettings.MaxDifficulty;
-                }
 
-                // Create new game engine with updated settings
                 var newGameEngine = new GameEngineService(_staticServiceProvider!, _logger, currentSettings, gameId);
 
-                // Re-add all existing players
                 foreach (var player in currentPlayers)
-                {
                     newGameEngine.AddPlayer(player.Name, player.Id, player.JoinedGameAt);
-                }
 
-                // Replace the game engine
                 _activeGames.TryUpdate(gameId, newGameEngine, gameEngine);
 
-                // Get teams if in team mode
-                var teams = currentSettings.IsTeamMode ? newGameEngine.GetTeams().Select(t => new
-                {
-                    t.Id,
-                    t.Name,
-                    memberCount = t.Members.Count,
-                    members = t.Members.Select(m => new { m.Id, m.Name })
-                }) : null;
+                var teams = currentSettings.IsTeamMode
+                    ? newGameEngine.GetTeams().Select(t => new
+                    {
+                        t.Id,
+                        t.Name,
+                        memberCount = t.Members.Count,
+                        members = t.Members.Select(m => new { m.Id, m.Name })
+                    })
+                    : null;
 
-                // Notify all players in the game about the updated settings
                 await Clients.Group(gameId).SendAsync("SettingsUpdated", new
                 {
                     settings = new
@@ -285,10 +352,8 @@ namespace TriviaBackend.Hubs
             }
 
             await Groups.AddToGroupAsync(Context.ConnectionId, gameId);
-
             _playerGameMap.TryAdd(Context.ConnectionId, gameId);
 
-            // Only send PlayerJoined to the group (not JoinedGame to caller)
             var players = gameEngine.GetPlayers();
             await Clients.Group(gameId).SendAsync("PlayerJoined", new
             {
@@ -301,11 +366,8 @@ namespace TriviaBackend.Hubs
         }
 
         /// <summary>
-        /// Join an existing game
+        /// Joins an existing game.
         /// </summary>
-        /// <param name="gameId"></param>
-        /// <param name="playerName"></param>
-        /// <returns></returns>
         public async Task JoinGame(string gameId, string playerName)
         {
             if (!_activeGames.TryGetValue(gameId, out var gameEngine))
@@ -326,8 +388,13 @@ namespace TriviaBackend.Hubs
             _playerGameMap.TryAdd(Context.ConnectionId, gameId);
 
             if (_gamePlayerUsernames.TryGetValue(gameId, out var playerDict))
-            {
                 playerDict.TryAdd(playerId, playerName);
+
+            var joinerUserId = Context.UserIdentifier;
+            if (!string.IsNullOrEmpty(joinerUserId))
+            {
+                _presenceService.SetInGame(joinerUserId, gameId);
+                await NotifyFriendsOfStatusChange(joinerUserId);
             }
 
             var players = gameEngine.GetPlayers().Select(p => new { p.Id, p.Name }).ToList();
@@ -337,15 +404,21 @@ namespace TriviaBackend.Hubs
         }
 
         /// <summary>
-        /// Leave the ongoing game
+        /// Leaves the current game.
         /// </summary>
-        /// <returns></returns>
         public async Task LeaveGame()
         {
             if (_playerGameMap.TryGetValue(Context.ConnectionId, out var gameId))
             {
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, gameId);
                 _playerGameMap.TryRemove(Context.ConnectionId, out _);
+
+                var leavingUserId = Context.UserIdentifier;
+                if (!string.IsNullOrEmpty(leavingUserId))
+                {
+                    _presenceService.ClearGame(leavingUserId);
+                    await NotifyFriendsOfStatusChange(leavingUserId);
+                }
 
                 if (_activeGames.TryGetValue(gameId, out var gameEngine))
                 {
@@ -362,12 +435,8 @@ namespace TriviaBackend.Hubs
         }
 
         /// <summary>
-        /// Start the game
+        /// Starts the game.
         /// </summary>
-        /// <param name="gameId"></param>
-        /// <param name="categories"></param>
-        /// <param name="difficulty"></param>
-        /// <returns></returns>
         public async Task StartGame(string gameId, string[]? categories, string? difficulty)
         {
             try
@@ -381,7 +450,6 @@ namespace TriviaBackend.Hubs
                     return;
                 }
 
-                Console.WriteLine($"Game found. Status: {gameEngine.Status}, Players: {gameEngine.GetPlayers().Count}");
                 _logger.LogInformation($"Game found. Status: {gameEngine.Status}, Players: {gameEngine.GetPlayers().Count}");
 
                 using var scope = _serviceProvider.CreateScope();
@@ -397,22 +465,12 @@ namespace TriviaBackend.Hubs
                         .Where(c => c.HasValue)
                         .Select(c => c!.Value)
                         .ToArray();
-                    _logger.LogInformation($"Selected categories: {string.Join(", ", selectedCategories)}");
-                }
-                else
-                {
-                    _logger.LogInformation("No categories specified - using all categories");
                 }
 
                 DifficultyLevel? maxDifficulty = null;
-                if (!string.IsNullOrEmpty(difficulty) &&
-                    Enum.TryParse<DifficultyLevel>(difficulty, true, out var diff))
-                {
+                if (!string.IsNullOrEmpty(difficulty) && Enum.TryParse<DifficultyLevel>(difficulty, true, out var diff))
                     maxDifficulty = diff;
-                    _logger.LogInformation($"Max difficulty: {maxDifficulty}");
-                }
 
-                _logger.LogInformation("Calling gameEngine.StartGame...");
                 if (gameEngine.StartGame(selectedCategories, maxDifficulty))
                 {
                     _logger.LogInformation("Game started successfully!");
@@ -433,12 +491,8 @@ namespace TriviaBackend.Hubs
         }
 
         /// <summary>
-        /// Submit player's answer to the current question
+        /// Submits a player's answer to the current question.
         /// </summary>
-        /// <param name="gameId"></param>
-        /// <param name="playerId"></param>
-        /// <param name="answer"></param>
-        /// <returns></returns>
         public async Task SubmitAnswer(string gameId, int playerId, int answer)
         {
             if (!_activeGames.TryGetValue(gameId, out var gameEngine))
@@ -474,7 +528,6 @@ namespace TriviaBackend.Hubs
 
             if (gameEngine.AllPlayersAnswered())
             {
-                // Cancel the timer since all players answered
                 if (_gameTimers.TryRemove(gameId, out var cts))
                 {
                     cts.Cancel();
@@ -485,11 +538,6 @@ namespace TriviaBackend.Hubs
             }
         }
 
-        /// <summary>
-        /// Send the current question to all players - UPDATED WITH TIMER
-        /// </summary>
-        /// <param name="gameId"></param>
-        /// <returns></returns>
         private async Task SendQuestion(string gameId)
         {
             if (_staticHubContext == null)
@@ -499,9 +547,7 @@ namespace TriviaBackend.Hubs
             }
 
             if (!_activeGames.TryGetValue(gameId, out var gameEngine))
-            {
                 return;
-            }
 
             var question = gameEngine.CurrentQuestion;
 
@@ -513,7 +559,6 @@ namespace TriviaBackend.Hubs
             }
 
             var questionKey = $"{gameId}_{question.Id}";
-
             _questionRevealed.AddOrUpdate(questionKey, false, (key, oldValue) => false);
 
             if (_gameTimers.TryRemove(gameId, out var oldCts))
@@ -522,7 +567,7 @@ namespace TriviaBackend.Hubs
                 oldCts.Dispose();
             }
 
-            _logger.LogInformation($"Sending question {gameEngine.CurrentQuestionNumber} (ID: {question.Id}) to game {gameId}, TimeLimit: {question.TimeLimit}s");
+            _logger.LogInformation($"Sending question {gameEngine.CurrentQuestionNumber} (ID: {question.Id}) to game {gameId}");
 
             await _staticHubContext.Clients.Group(gameId).SendAsync("QuestionSent", new
             {
@@ -536,7 +581,6 @@ namespace TriviaBackend.Hubs
             });
 
             var cancelTokenSource = new CancellationTokenSource();
-
             _gameTimers.TryAdd(gameId, cancelTokenSource);
 
             _ = Task.Run(async () =>
@@ -549,10 +593,7 @@ namespace TriviaBackend.Hubs
                     if (!cancelTokenSource.Token.IsCancellationRequested && _staticHubContext != null)
                     {
                         _logger.LogInformation($"[TIMER] Time's up for game {gameId}!");
-
                         await _staticHubContext.Clients.Group(gameId).SendAsync("TimeUp");
-                        _logger.LogInformation($"[TIMER] Sent TimeUp message to group {gameId}");
-
                         await RevealAnswerAndProgress(gameId, 5000, gameEngine);
                     }
                 }
@@ -568,21 +609,12 @@ namespace TriviaBackend.Hubs
                 finally
                 {
                     if (_gameTimers.TryGetValue(gameId, out var storedCts) && storedCts == cancelTokenSource)
-                    {
                         _gameTimers.TryRemove(gameId, out _);
-                    }
                     cancelTokenSource.Dispose();
                 }
             });
         }
 
-        /// <summary>
-        /// Reveal the answer and automatically progress to next question
-        /// </summary>
-        /// <param name="gameId"></param>
-        /// <param name="autoProgressMilliseconds"></param>
-        /// <param name="gameEngine"></param>
-        /// <returns></returns>
         private async Task RevealAnswerAndProgress(string gameId, int autoProgressMilliseconds, GameEngineService gameEngine)
         {
             _logger.LogInformation($"=== RevealAnswerAndProgress called for game {gameId} ===");
@@ -608,9 +640,7 @@ namespace TriviaBackend.Hubs
                 return;
             }
 
-            _questionRevealed.TryUpdate(questionKey, true, false);
             _questionRevealed[questionKey] = true;
-            _logger.LogInformation($"Revealing answer for question {question.Id} in game {gameId}");
 
             var leaderboard = gameEngine.GetCurrentGameLeaderboard();
 
@@ -627,30 +657,14 @@ namespace TriviaBackend.Hubs
                 })
             });
 
-            _logger.LogInformation($"Sent QuestionRevealed to game {gameId}");
-
-            _logger.LogInformation($"Waiting {autoProgressMilliseconds}ms before next question...");
             await Task.Delay(autoProgressMilliseconds);
 
-            _logger.LogInformation($"Moving to next question for game {gameId}");
-
             if (!gameEngine.NextQuestion())
-            {
-                _logger.LogInformation($"No more questions, ending game {gameId}");
                 await EndGame(gameId);
-            }
             else
-            {
-                _logger.LogInformation($"Loading next question for game {gameId}");
                 await SendQuestion(gameId);
-            }
         }
 
-        /// <summary>
-        /// End the game and show final leaderboard
-        /// </summary>
-        /// <param name="gameId"></param>
-        /// <returns></returns>
         private async Task EndGame(string gameId)
         {
             _logger.LogInformation($"=== Ending game {gameId} ===");
@@ -662,23 +676,17 @@ namespace TriviaBackend.Hubs
             }
 
             if (!_activeGames.TryGetValue(gameId, out var gameEngine))
-            {
                 return;
-            }
 
-            // Clean up any remaining timers
             if (_gameTimers.TryRemove(gameId, out var cts))
             {
                 cts.Cancel();
                 cts.Dispose();
             }
 
-            // Clean up all question revealed keys for this game
             var keysToRemove = _questionRevealed.Keys.Where(k => k.StartsWith($"{gameId}_")).ToList();
             foreach (var key in keysToRemove)
-            {
                 _questionRevealed.TryRemove(key, out _);
-            }
 
             gameEngine.EndGame();
 
@@ -709,12 +717,6 @@ namespace TriviaBackend.Hubs
             _logger.LogInformation($"Game {gameId} ended and removed from active games");
         }
 
-        /// <summary>
-        /// Update player information in-game
-        /// </summary>
-        /// <param name="gameId"></param>
-        /// <param name="finalLeaderboard"></param>
-        /// <returns></returns>
         private async Task UpdatePlayerStats(string gameId, List<GamePlayer> finalLeaderboard)
         {
             if (_staticServiceProvider == null)
@@ -736,23 +738,13 @@ namespace TriviaBackend.Hubs
                     return;
                 }
 
-                Console.WriteLine($"Found {playerUsernames.Count} players in game");
-
-                _logger.LogInformation($"Found {playerUsernames.Count} players in game");
-
                 foreach (var gamePlayer in finalLeaderboard)
                 {
-                    _logger.LogInformation($"Processing player ID {gamePlayer.Id}...");
-
                     if (!playerUsernames.TryGetValue(gamePlayer.Id, out var username))
                     {
                         _logger.LogError($"ERROR: No username found for player ID {gamePlayer.Id}");
                         continue;
                     }
-
-                    Console.WriteLine($"Looking up username: {username}");
-
-                    _logger.LogInformation($"Looking up username: {username}");
 
                     var player = await dbContext.Users
                         .OfType<Player>()
@@ -763,17 +755,11 @@ namespace TriviaBackend.Hubs
                         _logger.LogError($"Player {username} not found");
                         throw new GameUpdateException($"Player {username} not found");
                     }
-                    else
-                    {
-                        _logger.LogInformation($"Found player in DB: {player.Username}, Current ELO: {player.Elo}, Current Points: {player.TotalPoints}, Current Games: {player.GamesPlayed}");
 
-                        var eloChange = CalculateEloChange(gamePlayer, finalLeaderboard);
-                        player.Elo += eloChange;
-                        player.GamesPlayed++;
-                        player.TotalPoints += gamePlayer.CurrentGameScore;
-
-                        _logger.LogInformation($"Updated {username}: +{eloChange} ELO, +{gamePlayer.CurrentGameScore} Points, New ELO: {player.Elo}, New Total Points: {player.TotalPoints}, New Games: {player.GamesPlayed}");
-                    }
+                    var eloChange = CalculateEloChange(gamePlayer, finalLeaderboard);
+                    player.Elo += eloChange;
+                    player.GamesPlayed++;
+                    player.TotalPoints += gamePlayer.CurrentGameScore;
                 }
 
                 var changes = await dbContext.SaveChangesAsync();
@@ -784,16 +770,12 @@ namespace TriviaBackend.Hubs
                 _logger.LogError($"ERROR updating player statistics: {ex.Message}");
                 throw new PlayerStatsUpdateException("Error while updating player statistics");
             }
-
         }
 
         /// <summary>
-        /// Calculate elo difference after the game to change elo points
+        /// Calculates Elo change based on final position.
         /// </summary>
-        /// <param name="player"></param>
-        /// <param name="leaderboard"></param>
         /// <seealso href="https://en.wikipedia.org/wiki/Elo_rating_system"/>
-        /// <returns></returns>
         private static int CalculateEloChange(GamePlayer player, List<GamePlayer> leaderboard)
         {
             var position = leaderboard.FindIndex(p => p.Id == player.Id);
@@ -806,28 +788,17 @@ namespace TriviaBackend.Hubs
             return -5;
         }
 
-        /// <summary>
-        /// Generate a unique Player ID for the game
-        /// </summary>
-        /// <param name="gameEngine"></param>
-        /// <returns></returns>
         private static int GeneratePlayerId(GameEngineService gameEngine)
         {
-            var existingPlayers = gameEngine.GetPlayers();
-            var existingIds = existingPlayers.Select(p => p.Id).ToHashSet();
-
+            var existingIds = gameEngine.GetPlayers().Select(p => p.Id).ToHashSet();
             int playerId = 1;
-            while (existingIds.Contains(playerId))
-            {
-                playerId++;
-            }
+            while (existingIds.Contains(playerId)) playerId++;
             return playerId;
         }
 
         /// <summary>
-        /// Get a list of every existing category
+        /// Returns the count of available questions per category.
         /// </summary>
-        /// <returns></returns>
         public async Task GetAvailableCategories()
         {
             using var scope = _serviceProvider.CreateScope();
@@ -837,50 +808,29 @@ namespace TriviaBackend.Hubs
                 categories.Select(c => new { category = c.Key.ToString(), count = c.Value }));
         }
 
-        /// <summary>
-        /// Remove player from game if connection drops
-        /// </summary>
-        /// <param name="exception"></param>
-        /// <returns></returns>
-        public override async Task OnDisconnectedAsync(Exception? exception)
+        private async Task NotifyFriendsOfStatusChange(string userId)
         {
-            _logger.LogInformation($"=== OnDisconnectedAsync called for connection {Context.ConnectionId} ===");
-
-            if (_playerGameMap.TryGetValue(Context.ConnectionId, out var gameId))
+            if (_staticHubContext == null) return;
+            try
             {
-                _logger.LogInformation($"Connection {Context.ConnectionId} was in game {gameId}");
+                var friends = await _friendshipService.GetFriendsAsync(userId);
+                var status = _presenceService.GetStatus(userId);
 
-                if (_activeGames.TryGetValue(gameId, out var gameEngine))
+                foreach (var friend in friends)
                 {
-                    var players = gameEngine.GetPlayers();
-
-                    _logger.LogInformation($"Game {gameId} still active with {players.Count} players");
-
-                    await Clients.Group(gameId).SendAsync("PlayerDisconnected", Context.ConnectionId);
-
-                    if (gameEngine.Status == GameStatus.Waiting && players.Count == 1)
-                    {
-                        _logger.LogInformation($"Last player disconnected from waiting game {gameId}, cleaning up");
-
-                        if (_gameTimers.TryRemove(gameId, out var cts))
+                    await _staticHubContext.Clients.User(friend.UserId)
+                        .SendAsync("FriendStatusChanged", new
                         {
-                            cts.Cancel();
-                            cts.Dispose();
-                        }
-
-                        _activeGames.TryRemove(gameId, out _);
-                        _gamePlayerUsernames.TryRemove(gameId, out _);
-                    }
+                            userId,
+                            status = status.ToString(),
+                            gameId = _presenceService.GetActiveGameId(userId)
+                        });
                 }
-
-                _playerGameMap.TryRemove(Context.ConnectionId, out _);
             }
-            else
+            catch (Exception ex)
             {
-                _logger.LogInformation($"Connection {Context.ConnectionId} was not in any game");
+                _logger.LogError($"Error notifying friends of status change: {ex.Message}");
             }
-
-            await base.OnDisconnectedAsync(exception);
         }
     }
 }

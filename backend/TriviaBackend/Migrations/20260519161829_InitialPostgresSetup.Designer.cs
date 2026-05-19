@@ -12,8 +12,8 @@ using TriviaBackend.Data;
 namespace TriviaBackend.Migrations
 {
     [DbContext(typeof(TriviaDbContext))]
-    [Migration("20251210225230_RemoveClanBadField")]
-    partial class RemoveClanBadField
+    [Migration("20260519161829_InitialPostgresSetup")]
+    partial class InitialPostgresSetup
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -76,6 +76,41 @@ namespace TriviaBackend.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Clans");
+                });
+
+            modelBuilder.Entity("TriviaBackend.Models.Entities.Friendship", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("AddresseeId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("RequesterId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("RespondedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AddresseeId");
+
+                    b.HasIndex("RequesterId", "AddresseeId")
+                        .IsUnique();
+
+                    b.ToTable("Friendships");
                 });
 
             modelBuilder.Entity("TriviaBackend.Models.Entities.TriviaQuestion", b =>
@@ -155,10 +190,10 @@ namespace TriviaBackend.Migrations
                 {
                     b.HasBaseType("TriviaBackend.Models.Entities.BaseUser");
 
-                    b.Property<bool>("CanEditTrivias")
+                    b.Property<bool>("CanKickUsers")
                         .HasColumnType("boolean");
 
-                    b.Property<bool>("CanKickUsers")
+                    b.Property<bool>("CanManageContent")
                         .HasColumnType("boolean");
 
                     b.HasDiscriminator().HasValue("Admin");
@@ -178,6 +213,25 @@ namespace TriviaBackend.Migrations
                         .HasColumnType("integer");
 
                     b.HasDiscriminator().HasValue("Player");
+                });
+
+            modelBuilder.Entity("TriviaBackend.Models.Entities.Friendship", b =>
+                {
+                    b.HasOne("TriviaBackend.Models.Entities.BaseUser", "Addressee")
+                        .WithMany()
+                        .HasForeignKey("AddresseeId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("TriviaBackend.Models.Entities.BaseUser", "Requester")
+                        .WithMany()
+                        .HasForeignKey("RequesterId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Addressee");
+
+                    b.Navigation("Requester");
                 });
 #pragma warning restore 612, 618
         }
