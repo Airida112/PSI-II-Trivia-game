@@ -1,0 +1,68 @@
+.navbar {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	background: transparent;
+	padding: 15px 30px;
+	box-shadow: none;
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	z-index: 1000;
+}
+
+.navbar-buttons {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+}
+
+.navbar-button {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 16px;
+	color: white;
+	border: none;
+	border-radius: 6px;
+	cursor: pointer;
+	font-weight: 600;
+	transition: background 0.3s;
+}
+
+.navbar-button .icon {
+	width: 18px;
+	height: 18px;
+}
+
+.navbar-home {
+	background: #1652d2;
+}
+.navbar-home:hover {
+	background: #1247b8;
+}
+
+.navbar-editor {
+	background: #553bed;
+}
+
+.navbar-editor:hover {
+	background: #3d28b8;
+}
+
+.navbar-leaderboard {
+	background: #f59e0b;
+}
+
+.navbar-leaderboard:hover {
+	background: #d97706;
+}
+
+.navbar-logout {
+	background: #e53e3e;
+}
+
+.navbar-logout:hover {
+	background: #c53030;
+}

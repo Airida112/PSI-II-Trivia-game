@@ -1,0 +1,9 @@
+frontend/node_modules
+backend/bin
+backend/obj
+backend/.vs
+backend/TriviaBackendTests
+backend/TriviaBackend/appsettings.json
+secrets.env
+*.md
+.git

@@ -1,0 +1,3 @@
+dotnet test TriviaBackendTests.csproj /p:CollectCoverage=true /p:IncludeTestAssembly=true /p:CoverletOutput=./CoverageReports/coverage.xml /p:CoverletOutputFormat=opencover /p:ExcludeByFile=\"**/Microsoft.NET.Test.Sdk.Program.cs\,**/Migrations/*,**/Models/**/*,**/Exceptions/*,**/Program.cs,**/GameHub.cs"
+reportgenerator -reports:CoverageReports/coverage.xml -targetdir:CoverageReports/html -reporttypes:Html     
+start "" "%~dp0CoverageReports/html/index.html"
