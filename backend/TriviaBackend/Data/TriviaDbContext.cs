@@ -10,7 +10,7 @@ namespace TriviaBackend.Data
         public DbSet<TriviaQuestion> Questions { get; set; }
         public DbSet<BaseUser> Users { get; set; }
         public DbSet<Clan> Clans { get; set; }
-        public DbSet<Friendship> Friendships { get; set; }
+        public DbSet<FriendshipRequest> Friendships { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -21,7 +21,7 @@ namespace TriviaBackend.Data
                 .HasValue<Player>("Player")
                 .HasValue<Admin>("Admin");
 
-            modelBuilder.Entity<Friendship>(entity =>
+            modelBuilder.Entity<FriendshipRequest>(entity =>
             {
                 entity.HasOne(f => f.Requester)
                       .WithMany()

@@ -62,9 +62,12 @@ namespace TriviaBackend.Hubs
             _logger.LogInformation($"=== OnDisconnectedAsync called for connection {Context.ConnectionId} ===");
 
             var disconnectingUserId = _presenceService.GetUserIdByConnection(Context.ConnectionId);
-            _presenceService.SetOffline(Context.ConnectionId);
+
             if (!string.IsNullOrEmpty(disconnectingUserId))
+            {
+                _presenceService.ClearGame(disconnectingUserId);
                 await NotifyFriendsOfStatusChange(disconnectingUserId);
+            }
 
             if (_playerGameMap.TryGetValue(Context.ConnectionId, out var gameId))
             {
@@ -137,8 +140,24 @@ namespace TriviaBackend.Hubs
                 return;
             }
 
+            var inviterUsername = "A friend";
+            if (_gamePlayerUsernames.TryGetValue(gameId, out var playerDict))
+            {
+
+                inviterUsername = playerDict.Values.FirstOrDefault() ?? "A friend";
+            }
+
             await Clients.User(friendUserId)
-                .SendAsync("GameInviteReceived", new GameInvitePayload(inviterUserId, gameId));
+                .SendAsync("GameInviteReceived", new GameInvitePayload(inviterUsername, gameId));
+        }
+
+        /// <summary>
+        /// Allows a user to accept an invitation and join the in-memory game lobby.
+        /// </summary>
+        public async Task AcceptGameInvite(string gameId, string playerName)
+        {
+            // Simply route them directly into your existing in-memory join structure
+            await JoinGame(gameId, playerName);
         }
 
         /// <summary>

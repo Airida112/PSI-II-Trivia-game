@@ -10,7 +10,7 @@ namespace TriviaBackend.Services.Interfaces.DB
         /// Returns the created Friendship or null if it could not be created
         /// (duplicate, self-request, user not found, etc.).
         /// </summary>
-        Task<Friendship?> SendRequestAsync(string requesterId, string addresseeUsername);
+        Task<FriendshipRequest?> SendRequestAsync(string requesterId, string addresseeUsername);
 
         /// <summary>
         /// Accept a pending friend request. Returns false if the friendship

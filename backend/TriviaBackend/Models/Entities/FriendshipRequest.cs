@@ -4,7 +4,8 @@ using TriviaBackend.Models.Enums;
 
 namespace TriviaBackend.Models.Entities
 {
-    public class Friendship
+    public class FriendshipRequest
+
     {
         [Key]
         public int Id { get; set; }

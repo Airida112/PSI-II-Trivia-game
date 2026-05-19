@@ -8,7 +8,7 @@ namespace TriviaBackend.Data
         DbSet<TriviaQuestion> Questions { get; }
         DbSet<BaseUser> Users { get; }
         DbSet<Clan> Clans { get; }
-        DbSet<Friendship> Friendships { get; }
+        DbSet<FriendshipRequest> Friendships { get; }
 
         Task<int> SaveChangesAsync(CancellationToken cancellationToken = default);
     }

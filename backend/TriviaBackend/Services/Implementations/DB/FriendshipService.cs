@@ -13,8 +13,14 @@ namespace TriviaBackend.Services.Implementations.DB
         private readonly ITriviaDbContext _context = context;
         private readonly IPresenceService _presence = presenceService;
 
-        public async Task<Friendship?> SendRequestAsync(string requesterId, string addresseeUsername)
+        public async Task<FriendshipRequest?> SendRequestAsync(string requesterId, string addresseeUsername)
         {
+            var requesterExists = await _context.Users.AnyAsync(u => u.Id == requesterId);
+            if (!requesterExists)
+            {
+                throw new KeyNotFoundException($"The requester user with ID '{requesterId}' does not exist.");
+            }
+
             var addressee = await _context.Users
                 .FirstOrDefaultAsync(u => u.Username == addresseeUsername);
 
@@ -24,7 +30,6 @@ namespace TriviaBackend.Services.Implementations.DB
             if (addressee.Id == requesterId)
                 return null;
 
-
             var existing = await _context.Friendships
                 .FirstOrDefaultAsync(f =>
                     (f.RequesterId == requesterId && f.AddresseeId == addressee.Id) ||
@@ -33,7 +38,7 @@ namespace TriviaBackend.Services.Implementations.DB
             if (existing != null)
                 return null;
 
-            var friendship = new Friendship
+            var friendship = new FriendshipRequest
             {
                 RequesterId = requesterId,
                 AddresseeId = addressee.Id,
