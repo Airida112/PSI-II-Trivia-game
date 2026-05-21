@@ -8,6 +8,8 @@ namespace TriviaBackend.Services.Interfaces.DB
 
         Task<BaseUser?> GetUserByUsernameAsync(string usn);
 
+        Task<List<BaseUser>> GetAllUsersAsync();
+
         Task AddUserAsync(BaseUser user);
 
         Task RemoveUserAsync(BaseUser user);

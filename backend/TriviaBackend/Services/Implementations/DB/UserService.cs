@@ -14,6 +14,9 @@ namespace TriviaBackend.Services.Implementations.DB
         public async Task<BaseUser?> GetUserByUsernameAsync(string usn) =>
             await _context.Users.FirstOrDefaultAsync(u => u.Username == usn);
 
+        public async Task<List<BaseUser>> GetAllUsersAsync() =>
+            await _context.Users.ToListAsync();
+
         public async Task AddUserAsync(BaseUser user)
         {
             _context.Users.Add(user);

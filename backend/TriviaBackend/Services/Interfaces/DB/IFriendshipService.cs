@@ -39,5 +39,10 @@ namespace TriviaBackend.Services.Interfaces.DB
         /// Get all pending friend requests addressed to the given user.
         /// </summary>
         Task<List<FriendRequestEntry>> GetPendingRequestsAsync(string userId);
+
+        /// <summary>
+        /// Get all pending friend requests sent by the given user (outgoing requests).
+        /// </summary>
+        Task<List<FriendRequestEntry>> GetOutgoingRequestsAsync(string userId);
     }
 }

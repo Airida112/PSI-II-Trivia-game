@@ -35,6 +35,14 @@ namespace TriviaBackend.Controllers
             return Ok(requests);
         }
 
+        /// <summary>Get pending friend requests created by the given user (outgoing).</summary>
+        [HttpGet("outgoing/{userId}")]
+        public async Task<ActionResult<List<FriendRequestEntry>>> GetOutgoingRequests(string userId)
+        {
+            var requests = await _friendshipService.GetOutgoingRequestsAsync(userId);
+            return Ok(requests);
+        }
+
        
 
         /// <summary>

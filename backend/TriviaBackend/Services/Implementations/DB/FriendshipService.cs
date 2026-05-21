@@ -129,5 +129,18 @@ namespace TriviaBackend.Services.Implementations.DB
                     f.CreatedAt))
                 .ToListAsync();
         }
+
+        public async Task<List<FriendRequestEntry>> GetOutgoingRequestsAsync(string userId)
+        {
+            return await _context.Friendships
+                .Include(f => f.Addressee)
+                .Where(f => f.RequesterId == userId && f.Status == FriendshipStatus.Pending)
+                .Select(f => new FriendRequestEntry(
+                    f.Id,
+                    f.AddresseeId,
+                    f.Addressee!.Username,
+                    f.CreatedAt))
+                .ToListAsync();
+        }
     }
 }
