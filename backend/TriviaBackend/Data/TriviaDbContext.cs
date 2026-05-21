@@ -4,14 +4,13 @@ using TriviaBackend.Models.Entities;
 
 namespace TriviaBackend.Data
 {
-    /// <summary>
-    /// Class for managing the database schema
-    /// </summary>
-    public class TriviaDbContext(DbContextOptions<TriviaDbContext> options) : DbContext(options), ITriviaDbContext
+    public class TriviaDbContext(DbContextOptions<TriviaDbContext> options)
+        : DbContext(options), ITriviaDbContext
     {
         public DbSet<TriviaQuestion> Questions { get; set; }
         public DbSet<BaseUser> Users { get; set; }
         public DbSet<Clan> Clans { get; set; }
+        public DbSet<FriendshipRequest> Friendships { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -21,6 +20,21 @@ namespace TriviaBackend.Data
                 .HasDiscriminator<string>("user_type")
                 .HasValue<Player>("Player")
                 .HasValue<Admin>("Admin");
+
+            modelBuilder.Entity<FriendshipRequest>(entity =>
+            {
+                entity.HasOne(f => f.Requester)
+                      .WithMany()
+                      .HasForeignKey(f => f.RequesterId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasOne(f => f.Addressee)
+                      .WithMany()
+                      .HasForeignKey(f => f.AddresseeId)
+                      .OnDelete(DeleteBehavior.Restrict);
+
+                entity.HasIndex(f => new { f.RequesterId, f.AddresseeId }).IsUnique();
+            });
 
             modelBuilder.Entity<TriviaQuestion>().HasData(
                 new TriviaQuestion
