@@ -66,6 +66,7 @@ namespace TriviaBackend.Hubs
             if (!string.IsNullOrEmpty(disconnectingUserId))
             {
                 _presenceService.ClearGame(disconnectingUserId);
+                _presenceService.SetOffline(Context.ConnectionId);
                 await NotifyFriendsOfStatusChange(disconnectingUserId);
             }
 
@@ -731,6 +732,8 @@ namespace TriviaBackend.Hubs
                 })
             });
 
+            await ClearPresenceForEndedGame(gameId);
+
             _activeGames.TryRemove(gameId, out _);
             _gamePlayerUsernames.TryRemove(gameId, out _);
             _logger.LogInformation($"Game {gameId} ended and removed from active games");
@@ -849,6 +852,27 @@ namespace TriviaBackend.Hubs
             catch (Exception ex)
             {
                 _logger.LogError($"Error notifying friends of status change: {ex.Message}");
+            }
+        }
+
+        private async Task ClearPresenceForEndedGame(string gameId)
+        {
+            if (_staticServiceProvider == null || !_gamePlayerUsernames.TryGetValue(gameId, out var playerUsernames))
+                return;
+
+            using var scope = _staticServiceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<ITriviaDbContext>();
+
+            var usernames = playerUsernames.Values.Distinct().ToList();
+            var users = await dbContext.Users
+                .Where(u => usernames.Contains(u.Username))
+                .Select(u => new { u.Id, u.Username })
+                .ToListAsync();
+
+            foreach (var user in users)
+            {
+                _presenceService.ClearGame(user.Id);
+                await NotifyFriendsOfStatusChange(user.Id);
             }
         }
     }

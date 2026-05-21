@@ -18,6 +18,7 @@ const hubUrl = process.env.NODE_ENV === "development"
 function TriviaGame({ username, onLogout }) {
     const [connection] = useState(() => new GameConnection());
     const [connected, setConnected] = useState(false);
+    const [currentUserId, setCurrentUserId] = useState('');
     const [gameState, setGameState] = useState('menu');
     const [gameId, setGameId] = useState('');
     const [playerId, setPlayerId] = useState(null);
@@ -77,13 +78,93 @@ function TriviaGame({ username, onLogout }) {
     const [availableCategories] = useState(['Science', 'History', 'Sports', 'Geography', 'Literature']);
     const [availableDifficulties] = useState(['Easy', 'Medium', 'Hard']);
 
+    const handleLogoutClick = async () => {
+        if (currentUserId) {
+            await fetch('/api/friendship/presence/logout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: currentUserId })
+            }).catch(err => {
+                console.error('Failed to report logout presence', err);
+            });
+        }
+        await connection.disconnect();
+        onLogout();
+    };
+
     useEffect(() => {
         const initConnection = async () => {
             const success = await connection.connect(hubUrl);
             setConnected(success);
         };
         initConnection();
+
+        return () => {
+            connection.disconnect();
+        };
     }, [connection]);
+
+    useEffect(() => {
+        const resolveCurrentUserId = async () => {
+            if (!username) {
+                setCurrentUserId('');
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/clan/getuser/${encodeURIComponent(username)}`);
+                if (!res.ok) return;
+                const user = await res.json();
+                setCurrentUserId(user.id || user.userId || '');
+            } catch (err) {
+                console.error('Failed to resolve current user id', err);
+            }
+        };
+
+        resolveCurrentUserId();
+    }, [username]);
+
+    useEffect(() => {
+        if (!currentUserId) return undefined;
+
+        const pingPresence = () => {
+            fetch('/api/friendship/presence/ping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: currentUserId })
+            }).catch(err => {
+                console.error('Failed to ping presence', err);
+            });
+        };
+
+        pingPresence();
+        const intervalId = window.setInterval(pingPresence, 10000);
+
+        const handlePageExit = () => {
+            const payload = JSON.stringify({ userId: currentUserId });
+            if (navigator.sendBeacon) {
+                const blob = new Blob([payload], { type: 'application/json' });
+                navigator.sendBeacon('/api/friendship/presence/logout', blob);
+                return;
+            }
+
+            fetch('/api/friendship/presence/logout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                keepalive: true
+            }).catch(() => { });
+        };
+
+        window.addEventListener('pagehide', handlePageExit);
+        window.addEventListener('beforeunload', handlePageExit);
+
+        return () => {
+            window.clearInterval(intervalId);
+            window.removeEventListener('pagehide', handlePageExit);
+            window.removeEventListener('beforeunload', handlePageExit);
+        };
+    }, [currentUserId]);
 
     useEffect(() => {
         if (!connected) return;
@@ -217,12 +298,38 @@ function TriviaGame({ username, onLogout }) {
         connection.on('Error', handleError);
         connection.on('FriendRequestReceived', (data) => {
             console.log('Friend request received:', data);
-            setFriendRequests(prev => [data, ...prev]);
+            if (currentUserId) {
+                fetchFriendRequestsForUser(currentUserId);
+            }
         });
         connection.on('FriendRequestAccepted', (data) => {
             console.log('Friend request accepted:', data);
-            // refresh friends list if open
-            if (username) fetchFriendsForUser(username);
+            if (currentUserId) {
+                fetchFriendRequestsForUser(currentUserId);
+                fetchFriendsForUser(currentUserId);
+            }
+        });
+        connection.on('FriendRequestResponded', (data) => {
+            console.log('Friend request responded:', data);
+            if (currentUserId) {
+                fetchOutgoingRequestsForUser(currentUserId);
+                if (data.accepted) {
+                    fetchFriendsForUser(currentUserId);
+                }
+            }
+        });
+        connection.on('FriendStatusChanged', (data) => {
+            console.log('Friend status changed:', data);
+            setFriendsList(prev => prev.map(friend => {
+                if ((friend.userId || friend.UserId) !== data.userId) return friend;
+                return {
+                    ...friend,
+                    status: data.status,
+                    Status: data.status,
+                    activeGameId: data.gameId,
+                    ActiveGameId: data.gameId
+                };
+            }));
         });
         connection.on('GameInviteReceived', (data) => {
             console.log('Game invite received:', data);
@@ -245,9 +352,11 @@ function TriviaGame({ username, onLogout }) {
             connection.off('Error', handleError);
             connection.off('FriendRequestReceived');
             connection.off('FriendRequestAccepted');
+            connection.off('FriendRequestResponded');
+            connection.off('FriendStatusChanged');
             connection.off('GameInviteReceived');
         };
-    }, [connected, connection, availableCategories, handleCountdownComplete]);
+    }, [connected, connection, availableCategories, currentUserId, handleCountdownComplete]);
 
     useEffect(() => {
         if (timeLeft > 0 && currentQuestion && !showAnswer) {
@@ -304,10 +413,8 @@ function TriviaGame({ username, onLogout }) {
 
             try {
                 const res = await fetch('/api/clan/users');
-                console.log('Fetching /api/clan/users status:', res.status);
                 if (res.ok) {
                     const data = await res.json();
-                    console.log('Users list count:', (data || []).length, data && data.slice && data.slice(0,5));
                     const normalized = (data || []).map(u => ({ username: u.username || u.Username, id: u.id || u.Id }));
                     
                     const filtered = normalized.filter(u => (u.username || '').toLowerCase() !== (username || '').toLowerCase());
@@ -489,7 +596,7 @@ function TriviaGame({ username, onLogout }) {
         if (gameId && playerId) {
             try {
                 console.log(`Leaving game ${gameId} as player ${playerId}`);
-                await connection.invoke('LeaveGame', gameId, playerId);
+                await connection.invoke('LeaveGame');
             } catch (error) {
                 console.error('Error leaving game:', error);
             }
@@ -552,7 +659,7 @@ function TriviaGame({ username, onLogout }) {
             <Editor
                 onHome={() => { setShowEditorLocal(false); setGameState('menu'); }}
                 onEditor={() => setShowEditorLocal(false)}
-                onLogout={onLogout}
+                onLogout={handleLogoutClick}
                 fetchGlobalLeaderboard={fetchGlobalLeaderboard}
                 onProfileClick={() => setShowProfile(true)}
             />
@@ -700,18 +807,21 @@ function TriviaGame({ username, onLogout }) {
                                         {friendsList.length === 0 ? (
                                             <div className="empty-leaderboard">No friends yet</div>
                                         ) : (
-                                            friendsList.map((f, idx) => (
-                                                <div key={f.userId || idx} className="leaderboard-row">
-                                                    <div className="player-details">
-                                                        <div className="player-username">{f.username || f.userId}</div>
-                                                        <div className="player-games">{String(f.status) || ''}</div>
+                                            friendsList.map((f, idx) => {
+                                                const status = f.status ?? f.Status ?? 'Offline';
+                                                return (
+                                                    <div key={f.userId || idx} className="leaderboard-row">
+                                                        <div className="player-details">
+                                                            <div className="player-username">{f.username || f.userId}</div>
+                                                            <div className="player-games">{status}</div>
+                                                        </div>
+                                                        <div>
+                                                            {/* Invite removed from friends panel; invites are sent from the lobby card */}
+                                                            <span style={{ color: '#9ca3af' }}>{status === 'Online' ? 'Online' : status === 'InGame' ? 'In Game' : 'Offline'}</span>
+                                                        </div>
                                                     </div>
-                                                    <div>
-                                                        {/* Invite removed from friends panel; invites are sent from the lobby card */}
-                                                        <span style={{ color: '#9ca3af' }}>{f.status === 'Online' ? 'Online' : f.status === 'InGame' ? 'In Game' : 'Offline'}</span>
-                                                    </div>
-                                                </div>
-                                            ))
+                                                );
+                                            })
                                         )}
                                     </div>
                                 </div>
@@ -769,7 +879,7 @@ function TriviaGame({ username, onLogout }) {
                         onProfileClick={() => setShowProfile(true)}
                         onEditor={openEditor}
                         onFetchGlobalLeaderboard={fetchGlobalLeaderboard}
-                        onLogout={onLogout}
+                        onLogout={handleLogoutClick}
                         onFriendsClick={openFriendsPanel}
                     />
 

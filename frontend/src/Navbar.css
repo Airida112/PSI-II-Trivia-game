@@ -59,6 +59,14 @@
 	background: #d97706;
 }
 
+.navbar-friends {
+	background: #10b981;
+}
+
+.navbar-friends:hover {
+	background: #059669;
+}
+
 .navbar-logout {
 	background: #e53e3e;
 }

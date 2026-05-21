@@ -142,5 +142,28 @@ namespace TriviaBackend.Services.Implementations.DB
                     f.CreatedAt))
                 .ToListAsync();
         }
+
+        public async Task<FriendRelationshipEntry> GetRelationshipStatusAsync(string userId, string targetUsername)
+        {
+            var target = await _context.Users
+                .FirstOrDefaultAsync(u => u.Username == targetUsername);
+
+            if (target == null || target.Id == userId)
+                return new FriendRelationshipEntry("none", null);
+
+            var friendship = await _context.Friendships
+                .FirstOrDefaultAsync(f =>
+                    (f.RequesterId == userId && f.AddresseeId == target.Id) ||
+                    (f.RequesterId == target.Id && f.AddresseeId == userId));
+
+            if (friendship == null)
+                return new FriendRelationshipEntry("none", null);
+
+            if (friendship.Status == FriendshipStatus.Accepted)
+                return new FriendRelationshipEntry("friend", friendship.Id);
+
+            var status = friendship.AddresseeId == userId ? "incoming" : "outgoing";
+            return new FriendRelationshipEntry(status, friendship.Id);
+        }
     }
 }

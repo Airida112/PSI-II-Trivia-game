@@ -11,8 +11,11 @@ class GameConnection {
 
         return new Promise((resolve) => {
             script.onload = () => {
+                const token = localStorage.getItem('token');
                 this.connection = new window.signalR.HubConnectionBuilder()
-                    .withUrl(url)
+                    .withUrl(url, {
+                        accessTokenFactory: () => token || ''
+                    })
                     .withAutomaticReconnect()
                     .build();
 
@@ -46,6 +49,19 @@ class GameConnection {
 
     async invoke(method, ...args) {
         return this.connection?.invoke(method, ...args);
+    }
+
+    async disconnect() {
+        if (!this.connection) return;
+
+        try {
+            await this.connection.stop();
+        } catch (err) {
+            console.error('Error stopping connection:', err);
+        } finally {
+            this.listeners.clear();
+            this.connection = null;
+        }
     }
 }
 
