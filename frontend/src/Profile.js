@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, Trophy, Target, Calendar, TrendingUp, Award, ArrowLeft, Settings } from 'lucide-react';
 import './Profile.css';
-import LiquidChrome from './LiquidChrome';
+import Background from './Background';
 
 const Profile = ({ username, onBack }) => {
     const [userData, setUserData] = useState(null);
@@ -50,16 +50,7 @@ const Profile = ({ username, onBack }) => {
     if (loading) {
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
                 <div className="container">
                     <div className="loading">Loading profile...</div>
                 </div>
@@ -86,16 +77,7 @@ const Profile = ({ username, onBack }) => {
 
     return (
         <>
-            <div className="liquid-chrome-background">
-                <LiquidChrome
-                    baseColor={[0.4, 0.5, 0.9]}
-                    speed={0.5}
-                    amplitude={0.6}
-                    frequencyX={3}
-                    frequencyY={3}
-                    interactive={false}
-                />
-            </div>
+            <Background />
             <div className="container" style={{ paddingTop: '20px' }}>
                 <div className="card" style={{ maxWidth: '800px' }}>
                     {/* Header */}
