@@ -167,6 +167,11 @@ function TriviaGame({ username, onLogout }) {
     }, [currentUserId]);
 
     useEffect(() => {
+        if (!currentUserId || gameState !== 'lobby') return;
+        fetchFriendsForUser(currentUserId);
+    }, [currentUserId, gameState]);
+
+    useEffect(() => {
         if (!connected) return;
 
         const handleGameCreated = (data) => {
@@ -333,7 +338,10 @@ function TriviaGame({ username, onLogout }) {
         });
         connection.on('GameInviteReceived', (data) => {
             console.log('Game invite received:', data);
-            setIncomingInvites(prev => [data, ...prev]);
+            setIncomingInvites(prev => {
+                const alreadyExists = prev.some(invite => invite.gameId === data.gameId && invite.inviterUsername === data.inviterUsername);
+                return alreadyExists ? prev : [data, ...prev];
+            });
         });
 
         return () => {
@@ -510,18 +518,28 @@ function TriviaGame({ username, onLogout }) {
 
     const sendGameInvite = async (friendId) => {
         try {
-            if (!gameId) return alert('No active game');
-            // resolve inviter id
-            const uRes = await fetch(`/api/clan/getuser/${encodeURIComponent(username)}`);
-            const u = uRes.ok ? await uRes.json() : null;
-            const inviterId = u ? (u.id || u.userId || u) : null;
-            const res = await fetch(`/api/friendship/invite?inviterId=${encodeURIComponent(inviterId)}&friendId=${encodeURIComponent(friendId)}&gameId=${encodeURIComponent(gameId)}`, { method: 'POST' });
-            if (res.ok) alert('Invite sent');
-            else { const t = await res.text().catch(() => ''); alert(t || 'Failed to send invite'); }
+            if (!gameId || !currentUserId) return alert('No active game');
+            await connection.invoke('SendGameInvite', gameId, currentUserId, friendId);
+            alert('Invite sent');
         } catch (err) {
             console.error('Error sending invite', err);
-            alert('Network error sending invite');
+            alert(err?.message || 'Failed to send invite');
         }
+    };
+
+    const acceptGameInvite = async (invite) => {
+        try {
+            await connection.invoke('AcceptGameInvite', invite.gameId, username);
+            setIncomingInvites(prev => prev.filter(i => i !== invite));
+        } catch (err) {
+            console.error('Error accepting invite', err);
+            setIncomingInvites(prev => prev.filter(i => i !== invite));
+            alert(err?.message || 'Could not join invited lobby');
+        }
+    };
+
+    const declineGameInvite = (invite) => {
+        setIncomingInvites(prev => prev.filter(i => i !== invite));
     };
 
     const assignPlayerToTeam = async (playerId, teamId) => {
@@ -654,6 +672,36 @@ function TriviaGame({ username, onLogout }) {
         });
     };
 
+    const renderIncomingInvites = () => {
+        if (incomingInvites.length === 0) return null;
+
+        return (
+            <div className="invite-stack">
+                {incomingInvites.map((invite, idx) => (
+                    <div key={`${invite.gameId}-${invite.inviterUsername || idx}`} className="invite-toast">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                            <Users className="icon" />
+                            <div>
+                                <div style={{ fontWeight: 700, color: '#1a202c' }}>Game invitation</div>
+                                <div style={{ color: '#718096', fontSize: '14px' }}>
+                                    {invite.inviterUsername || 'A friend'} invited you to lobby {invite.gameId}
+                                </div>
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 10 }}>
+                            <button onClick={() => acceptGameInvite(invite)} className="button button-primary" style={{ flex: 1 }}>
+                                Join
+                            </button>
+                            <button onClick={() => declineGameInvite(invite)} className="button button-secondary" style={{ flex: 1 }}>
+                                Decline
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
     if (showEditorLocal) {
         return (
             <Editor
@@ -771,6 +819,7 @@ function TriviaGame({ username, onLogout }) {
             return (
                 <>
                     <Background />
+                    {renderIncomingInvites()}
                     <div className="container">
                         <div className="card" style={{ maxWidth: '700px' }}>
                             <div className="header">
@@ -874,6 +923,7 @@ function TriviaGame({ username, onLogout }) {
         return (
             <>
                 <Background />
+                {renderIncomingInvites()}
                 <div className="container">
                     <Navbar
                         onProfileClick={() => setShowProfile(true)}
@@ -948,6 +998,7 @@ function TriviaGame({ username, onLogout }) {
         return (
             <>
                 <Background />
+                {renderIncomingInvites()}
                 <div className="container" style={{ paddingTop: '100px' }}>
                     <div className="card" style={{ maxWidth: '1000px' }}>
                         <div className="header">
@@ -1413,6 +1464,44 @@ function TriviaGame({ username, onLogout }) {
                             )}
                         </div>
 
+                        <div className="section" style={{ marginTop: '24px' }}>
+                            <div className="section-header">
+                                <Users className="icon" />
+                                <h3>Friends</h3>
+                            </div>
+                            <div className="players-list">
+                                {friendsList.length === 0 ? (
+                                    <div className="player-item">
+                                        <span>No friends available</span>
+                                    </div>
+                                ) : (
+                                    friendsList.map((friend) => {
+                                        const status = friend.status ?? friend.Status ?? 'Offline';
+                                        const friendId = friend.userId || friend.UserId;
+                                        const canInvite = status === 'Online';
+                                        return (
+                                            <div key={friendId} className="player-item" style={{ gap: 12 }}>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                    <span>{friend.username || friend.Username}</span>
+                                                    <span className={`friend-status friend-status-${status.toLowerCase()}`}>
+                                                        {status === 'InGame' ? 'In Game' : status}
+                                                    </span>
+                                                </div>
+                                                <button
+                                                    onClick={() => sendGameInvite(friendId)}
+                                                    disabled={!canInvite}
+                                                    className={`button ${canInvite ? 'button-primary' : 'button-secondary'}`}
+                                                    style={{ padding: '8px 14px', minWidth: 90 }}
+                                                >
+                                                    Invite
+                                                </button>
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+                        </div>
+
                         <div style={{
                             marginTop: '20px',
                             textAlign: 'center'
@@ -1435,6 +1524,7 @@ function TriviaGame({ username, onLogout }) {
         return (
             <>
                 <Background />
+                {renderIncomingInvites()}
                 <div className="container">
                     <div className="card">
                         <div className="question-header">
@@ -1509,6 +1599,7 @@ function TriviaGame({ username, onLogout }) {
         return (
             <>
                 <Background />
+                {renderIncomingInvites()}
                 <div className="container">
                     <div className="card">
                         <div className="header">
