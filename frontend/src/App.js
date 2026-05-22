@@ -289,6 +289,12 @@ function TriviaGame({ username, onLogout }) {
             alert(message);
         };
 
+        const handleLobbyClosed = (data) => {
+            console.log('Lobby closed:', data);
+            resetLobbyAndGameState();
+            alert(data?.reason || 'Lobby closed');
+        };
+
         connection.on('GameCreated', handleGameCreated);
         connection.on('JoinedGame', handleJoinedGame);
         connection.on('PlayerJoined', handlePlayerJoined);
@@ -301,6 +307,7 @@ function TriviaGame({ username, onLogout }) {
         connection.on('QuestionRevealed', handleQuestionRevealed);
         connection.on('GameEnded', handleGameEnded);
         connection.on('Error', handleError);
+        connection.on('LobbyClosed', handleLobbyClosed);
         connection.on('FriendRequestReceived', (data) => {
             console.log('Friend request received:', data);
             if (currentUserId) {
@@ -358,6 +365,7 @@ function TriviaGame({ username, onLogout }) {
             connection.off('QuestionRevealed', handleQuestionRevealed);
             connection.off('GameEnded', handleGameEnded);
             connection.off('Error', handleError);
+            connection.off('LobbyClosed', handleLobbyClosed);
             connection.off('FriendRequestReceived');
             connection.off('FriendRequestAccepted');
             connection.off('FriendRequestResponded');
@@ -610,16 +618,7 @@ function TriviaGame({ username, onLogout }) {
         }
     };
 
-    const leaveGame = async () => {
-        if (gameId && playerId) {
-            try {
-                console.log(`Leaving game ${gameId} as player ${playerId}`);
-                await connection.invoke('LeaveGame');
-            } catch (error) {
-                console.error('Error leaving game:', error);
-            }
-        }
-
+    const resetLobbyAndGameState = () => {
         setGameState('menu');
         setGameId('');
         setPlayerId(null);
@@ -636,6 +635,19 @@ function TriviaGame({ username, onLogout }) {
         setQuestionsPerGame(10);
         setCurrentQuestionNumber(0);
         setTotalQuestions(10);
+    };
+
+    const leaveGame = async () => {
+        if (gameId && playerId) {
+            try {
+                console.log(`Leaving game ${gameId} as player ${playerId}`);
+                await connection.invoke('LeaveGame');
+            } catch (error) {
+                console.error('Error leaving game:', error);
+            }
+        }
+
+        resetLobbyAndGameState();
     };
 
     const fetchGlobalLeaderboard = async () => {
@@ -1399,15 +1411,6 @@ function TriviaGame({ username, onLogout }) {
                                     <h3 style={{ color: '#1a202c', marginBottom: '20px' }}>
                                         Waiting for host to start the game...
                                     </h3>
-                                    <div style={{ marginTop: '20px', textAlign: 'center' }}>
-                                        <button
-                                            onClick={leaveGame}
-                                            className="button button-secondary"
-                                        >
-                                            <ArrowLeft className="icon" />
-                                            Leave Lobby
-                                        </button>
-                                    </div>
                                     <div style={{
                                         background: '#f7fafc',
                                         padding: '20px',

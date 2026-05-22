@@ -22,6 +22,7 @@ namespace TriviaBackend.Hubs
         private static readonly ConcurrentDictionary<string, CancellationTokenSource> _gameTimers = new();
         private static readonly ConcurrentDictionary<string, bool> _questionRevealed = new();
         private static readonly ConcurrentDictionary<string, ConcurrentDictionary<int, string>> _gamePlayerUsernames = new();
+        private static readonly ConcurrentDictionary<string, string> _gameHostUserIds = new();
 
         private static IHubContext<GameHub>? _staticHubContext;
         private static IServiceProvider? _staticServiceProvider;
@@ -76,6 +77,16 @@ namespace TriviaBackend.Hubs
 
                 if (_activeGames.TryGetValue(gameId, out var gameEngine))
                 {
+                    if (!string.IsNullOrEmpty(disconnectingUserId) &&
+                        gameEngine.Status == GameStatus.Waiting &&
+                        _gameHostUserIds.TryGetValue(gameId, out var hostUserId) &&
+                        hostUserId == disconnectingUserId)
+                    {
+                        await CloseWaitingLobby(gameId, "Host left the lobby.");
+                        await base.OnDisconnectedAsync(exception);
+                        return;
+                    }
+
                     var players = gameEngine.GetPlayers();
                     _logger.LogInformation($"Game {gameId} still active with {players.Count} players");
 
@@ -194,6 +205,7 @@ namespace TriviaBackend.Hubs
             var creatorUserId = Context.UserIdentifier;
             if (!string.IsNullOrEmpty(creatorUserId))
             {
+                _gameHostUserIds[gameId] = creatorUserId;
                 _presenceService.SetInGame(creatorUserId, gameId);
                 await NotifyFriendsOfStatusChange(creatorUserId);
             }
@@ -430,10 +442,21 @@ namespace TriviaBackend.Hubs
         {
             if (_playerGameMap.TryGetValue(Context.ConnectionId, out var gameId))
             {
+                var leavingUserId = Context.UserIdentifier;
+
+                if (!string.IsNullOrEmpty(leavingUserId) &&
+                    _activeGames.TryGetValue(gameId, out var waitingGame) &&
+                    waitingGame.Status == GameStatus.Waiting &&
+                    _gameHostUserIds.TryGetValue(gameId, out var hostUserId) &&
+                    hostUserId == leavingUserId)
+                {
+                    await CloseWaitingLobby(gameId, "Host left the lobby.");
+                    return;
+                }
+
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, gameId);
                 _playerGameMap.TryRemove(Context.ConnectionId, out _);
 
-                var leavingUserId = Context.UserIdentifier;
                 if (!string.IsNullOrEmpty(leavingUserId))
                 {
                     _presenceService.ClearGame(leavingUserId);
@@ -442,6 +465,18 @@ namespace TriviaBackend.Hubs
 
                 if (_activeGames.TryGetValue(gameId, out var gameEngine))
                 {
+                    var leavingUsername = Context.User?.Identity?.Name;
+                    if (!string.IsNullOrEmpty(leavingUsername) &&
+                        _gamePlayerUsernames.TryGetValue(gameId, out var playerUsernames))
+                    {
+                        var playerEntry = playerUsernames.FirstOrDefault(p => p.Value == leavingUsername);
+                        if (!playerEntry.Equals(default(KeyValuePair<int, string>)))
+                        {
+                            gameEngine.RemovePlayer(playerEntry.Key);
+                            playerUsernames.TryRemove(playerEntry.Key, out _);
+                        }
+                    }
+
                     var players = gameEngine.GetPlayers().Select(p => new { p.Id, p.Name }).ToList();
                     await Clients.Group(gameId).SendAsync("PlayerLeft", new { connectionId = Context.ConnectionId, players });
 
@@ -449,6 +484,7 @@ namespace TriviaBackend.Hubs
                     {
                         _activeGames.TryRemove(gameId, out _);
                         _gamePlayerUsernames.TryRemove(gameId, out _);
+                        _gameHostUserIds.TryRemove(gameId, out _);
                     }
                 }
             }
@@ -736,6 +772,7 @@ namespace TriviaBackend.Hubs
 
             _activeGames.TryRemove(gameId, out _);
             _gamePlayerUsernames.TryRemove(gameId, out _);
+            _gameHostUserIds.TryRemove(gameId, out _);
             _logger.LogInformation($"Game {gameId} ended and removed from active games");
         }
 
@@ -874,6 +911,52 @@ namespace TriviaBackend.Hubs
                 _presenceService.ClearGame(user.Id);
                 await NotifyFriendsOfStatusChange(user.Id);
             }
+        }
+
+        private async Task CloseWaitingLobby(string gameId, string reason)
+        {
+            if (_staticHubContext == null || _staticServiceProvider == null)
+                return;
+
+            await _staticHubContext.Clients.Group(gameId).SendAsync("LobbyClosed", new { reason });
+
+            var connectionIds = _playerGameMap
+                .Where(entry => entry.Value == gameId)
+                .Select(entry => entry.Key)
+                .ToList();
+
+            foreach (var connectionId in connectionIds)
+            {
+                await Groups.RemoveFromGroupAsync(connectionId, gameId);
+                _playerGameMap.TryRemove(connectionId, out _);
+            }
+
+            if (_gamePlayerUsernames.TryGetValue(gameId, out var playerUsernames))
+            {
+                using var scope = _staticServiceProvider.CreateScope();
+                var dbContext = scope.ServiceProvider.GetRequiredService<ITriviaDbContext>();
+                var usernames = playerUsernames.Values.Distinct().ToList();
+                var users = await dbContext.Users
+                    .Where(u => usernames.Contains(u.Username))
+                    .Select(u => new { u.Id })
+                    .ToListAsync();
+
+                foreach (var user in users)
+                {
+                    _presenceService.ClearGame(user.Id);
+                    await NotifyFriendsOfStatusChange(user.Id);
+                }
+            }
+
+            if (_gameTimers.TryRemove(gameId, out var cts))
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
+
+            _activeGames.TryRemove(gameId, out _);
+            _gamePlayerUsernames.TryRemove(gameId, out _);
+            _gameHostUserIds.TryRemove(gameId, out _);
         }
     }
 }
