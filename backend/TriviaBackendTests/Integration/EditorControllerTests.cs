@@ -42,13 +42,15 @@ namespace TriviaBackendTests.Integration
                 Difficulty: DifficultyLevel.Easy,
                 TimeLimit: 30
             ));
+            var body = await create.Content.ReadAsStringAsync();
+            var options = new System.Text.Json.JsonSerializerOptions();
+            options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+            options.PropertyNameCaseInsensitive = true;
 
-            var created = await create.Content.ReadFromJsonAsync<TriviaQuestion>();
+            var created = System.Text.Json.JsonSerializer.Deserialize<TriviaQuestion>(body, options);
             var id = created!.Id;
-            Console.WriteLine($"Created question with ID: {id}");
 
             var response = await _client.GetAsync($"/api/editor/getquestion/{id}");
-
             Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.OK));
         }
 

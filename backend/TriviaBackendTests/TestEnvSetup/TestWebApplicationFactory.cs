@@ -19,35 +19,21 @@ using Microsoft.Extensions.Logging;
 
 public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
+    private readonly string _dbName = Guid.NewGuid().ToString();
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Test");
         builder.ConfigureServices(services =>
         {
-            // Remove the real TriviaDbContext
-            var descriptors = services
-                .Where(d => d.ServiceType == typeof(DbContextOptions<TriviaDbContext>) ||
-                            d.ServiceType == typeof(ITriviaDbContext))
-                .ToList();
+            var descriptor = services.SingleOrDefault(
+                d => d.ServiceType == typeof(DbContextOptions<TriviaDbContext>));
 
-            foreach (var d in descriptors) services.Remove(d);
+            if (descriptor != null)
+                services.Remove(descriptor);
 
             services.AddDbContext<TriviaDbContext>(options =>
-                options.UseInMemoryDatabase("TestDb"));
-
-            // Add interfaces again for in memory db
-            services.AddScoped<ITriviaDbContext, TriviaDbContext>();
-            services.AddTransient<IQuestionService, QuestionService>();
-            services.AddTransient<IQuestionsService, QuestionsService>();
-            services.AddScoped<IUserService, UserService>();
-            services.AddScoped<IPlayerService, PlayerService>();
-
-            services.AddSingleton<ILogger<GameEngineService>>(new Mock<ILogger<GameEngineService>>().Object);
-
-            var sp = services.BuildServiceProvider();
-            using var scope = sp.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<TriviaDbContext>();
-            db.Database.EnsureCreated();
+                options.UseInMemoryDatabase(_dbName));
         });
     }
 }
