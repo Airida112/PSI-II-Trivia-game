@@ -118,8 +118,16 @@ namespace TriviaBackend
             var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
                 ?? "Host=localhost;Port=5432;Database=triviaDb;Username=postgres;Password=postgres";
 
-            builder.Services.AddDbContext<TriviaDbContext>(options =>
-                options.UseNpgsql(connectionString));
+            if (builder.Environment.IsEnvironment("Test"))
+            {
+                builder.Services.AddDbContext<TriviaDbContext>(options =>
+                    options.UseInMemoryDatabase("TestDb"));
+            }
+            else
+            {
+                builder.Services.AddDbContext<TriviaDbContext>(options =>
+                    options.UseNpgsql(connectionString));
+            }
 
             builder.Services.AddScoped<ITriviaDbContext>(provider =>
                 provider.GetRequiredService<TriviaDbContext>());
