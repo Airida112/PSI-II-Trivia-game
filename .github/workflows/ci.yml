@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '8.0'
+      
+      - name: Restore
+        run: dotnet restore ./backend/TriviaBackend/TriviaBackend.csproj
+      
+      - name: Build
+        run: dotnet build ./backend/TriviaBackend/TriviaBackend.csproj
+      
+      - name: Test
+        run: dotnet test ./backend/TriviaBackendTests/TriviaBackendTests.csproj
