@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using TriviaBackend.Hubs;
 using TriviaBackend.Models.Records;
+using TriviaBackend.Services.Interfaces;
 using TriviaBackend.Services.Interfaces.DB;
 
 namespace TriviaBackend.Controllers
@@ -16,6 +17,7 @@ namespace TriviaBackend.Controllers
     [ApiController]
     public class FriendshipController(
         IFriendshipService _friendshipService,
+        IPresenceService _presenceService,
         IHubContext<GameHub> _hubContext) : ControllerBase
     {
 
@@ -33,6 +35,61 @@ namespace TriviaBackend.Controllers
         {
             var requests = await _friendshipService.GetPendingRequestsAsync(userId);
             return Ok(requests);
+        }
+
+        /// <summary>Get all pending friend requests created by the given user.</summary>
+        [HttpGet("outgoing/{userId}")]
+        public async Task<ActionResult<List<FriendRequestEntry>>> GetOutgoingRequests(string userId)
+        {
+            var requests = await _friendshipService.GetOutgoingRequestsAsync(userId);
+            return Ok(requests);
+        }
+
+        /// <summary>Get the current friendship status between a user and a target username.</summary>
+        [HttpGet("status/{userId}/{targetUsername}")]
+        public async Task<ActionResult<FriendRelationshipEntry>> GetRelationshipStatus(string userId, string targetUsername)
+        {
+            var relationship = await _friendshipService.GetRelationshipStatusAsync(userId, targetUsername);
+            return Ok(relationship);
+        }
+
+        /// <summary>
+        /// Refreshes a user's presence heartbeat while the app is open.
+        /// </summary>
+        [HttpPost("presence/ping")]
+        public ActionResult PingPresence([FromBody] UserPresenceDTO dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.UserId))
+                return BadRequest("UserId is required.");
+
+            _presenceService.Touch(dto.UserId);
+            return Ok();
+        }
+
+        /// <summary>
+        /// Forces a user's presence offline and notifies their friends.
+        /// </summary>
+        [HttpPost("presence/logout")]
+        public async Task<ActionResult> LogoutPresence([FromBody] UserPresenceDTO dto)
+        {
+            if (string.IsNullOrWhiteSpace(dto.UserId))
+                return BadRequest("UserId is required.");
+
+            _presenceService.ForceOffline(dto.UserId);
+
+            var friends = await _friendshipService.GetFriendsAsync(dto.UserId);
+            foreach (var friend in friends)
+            {
+                await _hubContext.Clients.User(friend.UserId)
+                    .SendAsync("FriendStatusChanged", new
+                    {
+                        userId = dto.UserId,
+                        status = "Offline",
+                        gameId = (string?)null
+                    });
+            }
+
+            return Ok();
         }
 
        
@@ -67,6 +124,9 @@ namespace TriviaBackend.Controllers
         [HttpPost("respond")]
         public async Task<ActionResult> RespondToRequest([FromBody] RespondFriendRequestDTO dto)
         {
+            var pendingRequest = (await _friendshipService.GetPendingRequestsAsync(dto.AddresseeId))
+                .FirstOrDefault(r => r.FriendshipId == dto.FriendshipId);
+
             if (dto.Accept)
             {
                 var ok = await _friendshipService.AcceptRequestAsync(dto.AddresseeId, dto.FriendshipId);
@@ -77,6 +137,12 @@ namespace TriviaBackend.Controllers
                 await _hubContext.Clients.User(dto.AddresseeId)
                     .SendAsync("FriendRequestAccepted", new { friendshipId = dto.FriendshipId });
 
+                if (pendingRequest != null)
+                {
+                    await _hubContext.Clients.User(pendingRequest.RequesterId)
+                        .SendAsync("FriendRequestResponded", new { friendshipId = dto.FriendshipId, accepted = true });
+                }
+
                 return Ok("Friend request accepted.");
             }
             else
@@ -84,6 +150,12 @@ namespace TriviaBackend.Controllers
                 var ok = await _friendshipService.DeclineRequestAsync(dto.AddresseeId, dto.FriendshipId);
                 if (!ok)
                     return BadRequest("Could not decline the request. It may not exist or you are not the addressee.");
+
+                if (pendingRequest != null)
+                {
+                    await _hubContext.Clients.User(pendingRequest.RequesterId)
+                        .SendAsync("FriendRequestResponded", new { friendshipId = dto.FriendshipId, accepted = false });
+                }
 
                 return Ok("Friend request declined.");
             }

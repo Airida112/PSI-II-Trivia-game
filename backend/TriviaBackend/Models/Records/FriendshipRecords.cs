@@ -23,6 +23,21 @@ namespace TriviaBackend.Models.Records
     );
 
     /// <summary>
+    /// Represents the current relationship between the viewer and a target user.
+    /// </summary>
+    public record FriendRelationshipEntry(
+        string Status,
+        int? FriendshipId
+    );
+
+    /// <summary>
+    /// Payload used for explicit logout and presence heartbeat operations.
+    /// </summary>
+    public record UserPresenceDTO(
+        string UserId
+    );
+
+    /// <summary>
     /// Payload sent by the client to send a friend request
     /// </summary>
     public record SendFriendRequestDTO(

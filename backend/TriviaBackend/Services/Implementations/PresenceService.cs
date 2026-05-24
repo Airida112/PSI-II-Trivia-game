@@ -10,11 +10,15 @@ namespace TriviaBackend.Services.Implementations
     /// </summary>
     public class PresenceService : IPresenceService
     {
+        private static readonly TimeSpan PresenceTimeout = TimeSpan.FromSeconds(20);
+
         private readonly ConcurrentDictionary<string, HashSet<string>> _userConnections = new();
 
         private readonly ConcurrentDictionary<string, string> _connectionUser = new();
 
         private readonly ConcurrentDictionary<string, string> _userGame = new();
+
+        private readonly ConcurrentDictionary<string, DateTime> _userLastSeenUtc = new();
 
         private readonly object _lock = new();
 
@@ -28,6 +32,7 @@ namespace TriviaBackend.Services.Implementations
                     (_, existing) => { existing.Add(connectionId); return existing; }
                 );
                 _connectionUser[connectionId] = userId;
+                _userLastSeenUtc[userId] = DateTime.UtcNow;
             }
         }
 
@@ -46,14 +51,31 @@ namespace TriviaBackend.Services.Implementations
                     {
                         _userConnections.TryRemove(userId, out _);
                         _userGame.TryRemove(userId, out _);
+                        _userLastSeenUtc.TryRemove(userId, out _);
                     }
                 }
+            }
+        }
+
+        public void ForceOffline(string userId)
+        {
+            lock (_lock)
+            {
+                if (_userConnections.TryRemove(userId, out var conns))
+                {
+                    foreach (var connectionId in conns)
+                        _connectionUser.TryRemove(connectionId, out _);
+                }
+
+                _userGame.TryRemove(userId, out _);
+                _userLastSeenUtc.TryRemove(userId, out _);
             }
         }
 
         public void SetInGame(string userId, string gameId)
         {
             _userGame[userId] = gameId;
+            _userLastSeenUtc[userId] = DateTime.UtcNow;
         }
 
         public void ClearGame(string userId)
@@ -61,10 +83,22 @@ namespace TriviaBackend.Services.Implementations
             _userGame.TryRemove(userId, out _);
         }
 
+        public void Touch(string userId)
+        {
+            _userLastSeenUtc[userId] = DateTime.UtcNow;
+        }
+
         public PlayerStatus GetStatus(string userId)
         {
             if (!_userConnections.TryGetValue(userId, out var conns) || conns.Count == 0)
                 return PlayerStatus.Offline;
+
+            if (!_userLastSeenUtc.TryGetValue(userId, out var lastSeenUtc) ||
+                DateTime.UtcNow - lastSeenUtc > PresenceTimeout)
+            {
+                ForceOffline(userId);
+                return PlayerStatus.Offline;
+            }
 
             return _userGame.ContainsKey(userId) ? PlayerStatus.InGame : PlayerStatus.Online;
         }

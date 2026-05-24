@@ -137,6 +137,23 @@ namespace TriviaBackend.Services.Implementations
 
         public List<Team> GetTeams() => _teams.ToList();
 
+        public bool RemovePlayer(int playerId)
+        {
+            var player = _players.FirstOrDefault(p => p.Id == playerId);
+            if (player == null)
+                return false;
+
+            _players.Remove(player);
+            _gameAnswers.Remove(playerId);
+
+            foreach (var team in _teams)
+            {
+                team.RemoveMember(player);
+            }
+
+            return true;
+        }
+
         public bool StartGame(QuestionCategory[]? categories = null, DifficultyLevel? maxDifficulty = null)
         {
             if (_players.Count == 0 || Status != GameStatus.Waiting)

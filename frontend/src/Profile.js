@@ -1,11 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { User, Trophy, Target, Calendar, TrendingUp, Award, ArrowLeft, Settings } from 'lucide-react';
+import { User, Trophy, Target, Calendar, TrendingUp, Award, ArrowLeft } from 'lucide-react';
 import './Profile.css';
-import LiquidChrome from './LiquidChrome';
+import Background from './Background';
+import FriendButton from './FriendButton';
 
-const Profile = ({ username, onBack }) => {
+const Profile = ({ username, currentUsername, onBack }) => {
     const [userData, setUserData] = useState(null);
     const [currentUser, setCurrentUser] = useState(null);
+    const [relationship, setRelationship] = useState(null);
+    const [relationshipMessage, setRelationshipMessage] = useState('');
+    const [relationshipLoading, setRelationshipLoading] = useState(false);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -28,12 +32,12 @@ const Profile = ({ username, onBack }) => {
         fetchUserData();
     }, [username]);
 
-    // Fetch current user for clan operations
     useEffect(() => {
         const fetchCurrentUser = async () => {
-            if (!username) return;
+            const lookupName = currentUsername || null;
+            if (!lookupName) return;
             try {
-                const res = await fetch(`/api/clan/getuser/${encodeURIComponent(username)}`);
+                const res = await fetch(`/api/clan/getuser/${encodeURIComponent(lookupName)}`);
                 if (res.ok) {
                     const u = await res.json();
                     setCurrentUser(u);
@@ -45,21 +49,51 @@ const Profile = ({ username, onBack }) => {
             }
         };
         fetchCurrentUser();
-    }, [username]);
+    }, [currentUsername]);
+
+    useEffect(() => {
+        const fetchRelationship = async () => {
+            if (!currentUser?.id || !userData?.username) {
+                setRelationship(null);
+                return;
+            }
+
+            if (currentUser.username?.toLowerCase() === userData.username.toLowerCase()) {
+                setRelationship(null);
+                return;
+            }
+
+            setRelationshipLoading(true);
+            try {
+                const res = await fetch(`/api/friendship/status/${encodeURIComponent(currentUser.id)}/${encodeURIComponent(userData.username)}`);
+                if (res.ok) {
+                    setRelationship(await res.json());
+                } else {
+                    console.error('Failed to fetch friendship status');
+                    setRelationship({ status: 'none', friendshipId: null });
+                }
+            } catch (err) {
+                console.error('Network error loading friendship status:', err);
+                setRelationship({ status: 'none', friendshipId: null });
+            } finally {
+                setRelationshipLoading(false);
+            }
+        };
+
+        fetchRelationship();
+    }, [currentUser, userData]);
+
+    useEffect(() => {
+        if (!relationshipMessage) return undefined;
+
+        const timer = setTimeout(() => setRelationshipMessage(''), 3000);
+        return () => clearTimeout(timer);
+    }, [relationshipMessage]);
 
     if (loading) {
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
                 <div className="container">
                     <div className="loading">Loading profile...</div>
                 </div>
@@ -86,16 +120,7 @@ const Profile = ({ username, onBack }) => {
 
     return (
         <>
-            <div className="liquid-chrome-background">
-                <LiquidChrome
-                    baseColor={[0.4, 0.5, 0.9]}
-                    speed={0.5}
-                    amplitude={0.6}
-                    frequencyX={3}
-                    frequencyY={3}
-                    interactive={false}
-                />
-            </div>
+            <Background />
             <div className="container" style={{ paddingTop: '20px' }}>
                 <div className="card" style={{ maxWidth: '800px' }}>
                     {/* Header */}
@@ -142,8 +167,26 @@ const Profile = ({ username, onBack }) => {
                                     <span>Total Players: {safeUserData.totalPlayers}</span>
                                 </div>
                             </div>
+                            <div style={{ marginLeft: '16px' }}>
+                                {currentUsername && safeUserData.username && (currentUsername.toLowerCase() !== safeUserData.username.toLowerCase()) && (
+                                    <ProfileFriendAction
+                                        targetUsername={safeUserData.username}
+                                        currentUsername={currentUsername}
+                                        currentUser={currentUser}
+                                        relationship={relationship}
+                                        relationshipLoading={relationshipLoading}
+                                        onRelationshipChange={setRelationship}
+                                        onMessage={setRelationshipMessage}
+                                    />
+                                )}
+                            </div>
                         </div>
                     </div>
+                    {relationshipMessage && (
+                        <div style={{ marginBottom: '16px', color: '#374151', textAlign: 'right' }}>
+                            {relationshipMessage}
+                        </div>
+                    )}
 
                     {/* Stats Grid */}
                     <div style={{
@@ -233,7 +276,9 @@ const Profile = ({ username, onBack }) => {
                         </div>
                     </div>
                     {/* Clan Section */}
-                    <div style={{
+                    { /* only show clan operations if viewing your own profile */ }
+                    {currentUsername && safeUserData.username && currentUsername.toLowerCase() === safeUserData.username.toLowerCase() && (
+                        <div style={{
                         background: '#f7fafc',
                         padding: '24px',
                         borderRadius: '12px',
@@ -244,17 +289,20 @@ const Profile = ({ username, onBack }) => {
                         <ClanSection username={username} />
 
                     </div>
-                    {/* Clan Admin */}
-                    <div style={{
-                        background: '#f7fafc',
-                        padding: '16px',
-                        borderRadius: '12px',
-                        border: '2px solid #e2e8f0',
-                        marginTop: '12px'
-                    }}>
-                        <h4 style={{ margin: '0 0 8px 0', color: '#1a202c' }}>Clan Admin</h4>
-                        <ClanAdmin userId={currentUser?.id} />
-                    </div>
+                    )}
+                    {/* Clan Admin only for own profile */}
+                    {currentUsername && safeUserData.username && currentUsername.toLowerCase() === safeUserData.username.toLowerCase() && (
+                        <div style={{
+                            background: '#f7fafc',
+                            padding: '16px',
+                            borderRadius: '12px',
+                            border: '2px solid #e2e8f0',
+                            marginTop: '12px'
+                        }}>
+                            <h4 style={{ margin: '0 0 8px 0', color: '#1a202c' }}>Clan Admin</h4>
+                            <ClanAdmin userId={currentUser?.id} />
+                        </div>
+                    )}
                 </div>
             </div>
         </>
@@ -419,6 +467,8 @@ const ClanSection = ({ username }) => {
                     return;
                 }
                 const u = await uRes.json();
+                
+
                 setCurrentUser(u);
 
                 const clanId = u.clanId ?? null;
@@ -630,7 +680,7 @@ const ClanSection = ({ username }) => {
                                     <span>{name}</span>
                                     <div>
                                         {id !== (currentUser.id || currentUser.userId) && (
-                                            <button type="button" class="button" onClick={() => handleKick(id)} style={{ background: '#ef4444', color: 'white', border: 'none', padding: '6px 10px', borderRadius: 6 }}>Kick</button>
+                                            <button type="button" className="button" onClick={() => handleKick(id)} style={{ background: '#ef4444', color: 'white', border: 'none', padding: '6px 10px', borderRadius: 6 }}>Kick</button>
                                         )}
                                     </div>
                                 </li>
@@ -650,5 +700,78 @@ const ClanSection = ({ username }) => {
     );
 };
 
+const ProfileFriendAction = ({
+    targetUsername,
+    currentUsername,
+    currentUser,
+    relationship,
+    relationshipLoading,
+    onRelationshipChange,
+    onMessage
+}) => {
+    const handleSend = async () => {
+        if (!currentUser?.id) return onMessage('You must be logged in');
+        try {
+            const res = await fetch('/api/friendship/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requesterId: currentUser.id, addresseeUsername: targetUsername })
+            });
+            if (res.ok) {
+                const data = await res.json().catch(() => null);
+                onRelationshipChange({ status: 'outgoing', friendshipId: data?.friendshipId ?? null });
+                onMessage('Friend request sent');
+            } else if (res.status === 409) {
+                const t = await res.text().catch(() => '');
+                onMessage(t || 'Friend request could not be sent (conflict)');
+            } else {
+                const t = await res.text().catch(() => '');
+                onMessage(t || `Failed to send friend request: ${res.status}`);
+            }
+        } catch (err) {
+            console.error('Network error sending friend request', err);
+            onMessage('Network error');
+        }
+    };
+
+    const handleRespond = async (friendshipId, accept) => {
+        if (!currentUser?.id || !friendshipId) return;
+        try {
+            const res = await fetch('/api/friendship/respond', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ addresseeId: currentUser.id, friendshipId, accept: !!accept })
+            });
+
+            if (res.ok) {
+                onRelationshipChange({
+                    status: accept ? 'friend' : 'none',
+                    friendshipId: accept ? friendshipId : null
+                });
+                onMessage(accept ? 'Friend request accepted' : 'Friend request declined');
+            } else {
+                const t = await res.text().catch(() => '');
+                onMessage(t || `Failed to respond to request: ${res.status}`);
+            }
+        } catch (err) {
+            console.error('Network error responding to friend request', err);
+            onMessage('Network error');
+        }
+    };
+
+    if (relationshipLoading && !relationship) {
+        return <button className="button" disabled style={{ opacity: 0.7, padding: '8px 12px' }}>Loading...</button>;
+    }
+
+    return (
+        <FriendButton
+            targetUsername={targetUsername}
+            currentUsername={currentUsername}
+            relationship={relationship}
+            onSend={handleSend}
+            onRespond={handleRespond}
+        />
+    );
+};
 
 export default Profile;

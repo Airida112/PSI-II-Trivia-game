@@ -1,6 +1,10 @@
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Serilog;
+using System.Text;
+using System.Text.Json.Serialization;
 using TriviaBackend.Data;
 using TriviaBackend.Hubs;
 using TriviaBackend.Services.Implementations;
@@ -46,7 +50,47 @@ namespace TriviaBackend
 
             builder.Logging.AddSerilog();
 
-            builder.Services.AddControllers();
+            builder.Services.AddControllers()
+                .AddJsonOptions(options =>
+                {
+                    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+                });
+
+            var jwtKey = builder.Configuration.GetValue<string>("AppSettings:Token")
+                ?? throw new InvalidOperationException("AppSettings:Token is not configured.");
+            var jwtIssuer = builder.Configuration.GetValue<string>("AppSettings:Issuer");
+            var jwtAudience = builder.Configuration.GetValue<string>("AppSettings:Audience");
+
+            builder.Services
+                .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                .AddJwtBearer(options =>
+                {
+                    options.TokenValidationParameters = new TokenValidationParameters
+                    {
+                        ValidateIssuerSigningKey = true,
+                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+                        ValidateIssuer = !string.IsNullOrWhiteSpace(jwtIssuer),
+                        ValidIssuer = jwtIssuer,
+                        ValidateAudience = !string.IsNullOrWhiteSpace(jwtAudience),
+                        ValidAudience = jwtAudience,
+                        ValidateLifetime = true,
+                        ClockSkew = TimeSpan.Zero
+                    };
+
+                    options.Events = new JwtBearerEvents
+                    {
+                        OnMessageReceived = context =>
+                        {
+                            var accessToken = context.Request.Query["access_token"];
+                            var path = context.HttpContext.Request.Path;
+
+                            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/gamehub"))
+                                context.Token = accessToken;
+
+                            return Task.CompletedTask;
+                        }
+                    };
+                });
 
             builder.Services.AddSignalR(options =>
             {

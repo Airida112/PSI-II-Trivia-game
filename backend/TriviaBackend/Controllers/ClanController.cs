@@ -24,6 +24,15 @@ namespace TriviaBackend.Controllers
             return Ok(user);
         }
 
+
+
+        [HttpGet("users")]
+        public async Task<ActionResult<List<object>>> GetAllUsers()
+        {
+            var users = await _UserService.GetAllUsersAsync();
+            return Ok(users.Select(u => new { u.Id, u.Username }).ToList());
+        }
+
         [HttpGet("getclan/{clanId}")]
         public async Task<ActionResult<Clan>> GetClanById(int clanId)
         {

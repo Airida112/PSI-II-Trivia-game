@@ -2,7 +2,7 @@ import React from 'react';
 import { Trophy, LogOut, User, Home, Edit } from 'lucide-react';
 import './Navbar.css';
 
-const Navbar = ({ onProfileClick, onFetchGlobalLeaderboard, onLogout, onHome, onEditor }) => {
+const Navbar = ({ onProfileClick, onFetchGlobalLeaderboard, onLogout, onHome, onEditor, onFriendsClick }) => {
     return (
         <div className="navbar">
             <button
@@ -38,6 +38,10 @@ const Navbar = ({ onProfileClick, onFetchGlobalLeaderboard, onLogout, onHome, on
                 <button onClick={onFetchGlobalLeaderboard} className="navbar-button navbar-leaderboard" type="button">
                     <Trophy className="icon" />
                     Leaderboard
+                </button>
+                <button onClick={onFriendsClick} className="navbar-button navbar-friends" type="button">
+                    <User className="icon" />
+                    Friends
                 </button>
                 <button onClick={onLogout} className="navbar-button navbar-logout" type="button">
                     <LogOut className="icon" />

@@ -1,72 +1,24 @@
 ﻿import React, { useState, useEffect, useCallback } from 'react';
-import { Users, Trophy, Clock, ArrowLeft, Play, LogIn, Plus, LogOut, User, Settings, Filter, Notebook } from 'lucide-react';
+import { Users, Trophy, Clock, ArrowLeft, Play, LogIn, Plus, Settings, Filter } from 'lucide-react';
 import Login from './Login';
 import Editor from './Editor';
 import './App.css';
-import LiquidChrome from './LiquidChrome';
 import TextPressure from './TextPressure';
 import Profile from './Profile';
+import FriendButton from './FriendButton';
 import Navbar from './Navbar';
 import Countdown from './Countdown';
+import Background from './Background';
+import GameConnection from './services/GameConnection';
 
 const hubUrl = process.env.NODE_ENV === "development"
     ? "https://localhost:5001/gamehub"
     : "/gamehub";
 
-class GameConnection {
-    constructor() {
-        this.connection = null;
-        this.listeners = new Map();
-    }
-
-    async connect(url) {
-        const script = document.createElement('script');
-        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/6.0.1/signalr.min.js';
-        document.head.appendChild(script);
-
-        return new Promise((resolve) => {
-            script.onload = () => {
-                this.connection = new window.signalR.HubConnectionBuilder()
-                    .withUrl(url)
-                    .withAutomaticReconnect()
-                    .build();
-
-                this.connection.start()
-                    .then(() => resolve(true))
-                    .catch(err => {
-                        console.error('Connection error:', err);
-                        resolve(false);
-                    });
-            };
-        });
-    }
-
-    on(event, callback) {
-        if (!this.listeners.has(event)) {
-            this.listeners.set(event, []);
-            this.connection?.on(event, (...args) => {
-                this.listeners.get(event).forEach(cb => cb(...args));
-            });
-        }
-        this.listeners.get(event).push(callback);
-    }
-
-    off(event, callback) {
-        const callbacks = this.listeners.get(event);
-        if (callbacks) {
-            const index = callbacks.indexOf(callback);
-            if (index > -1) callbacks.splice(index, 1);
-        }
-    }
-
-    async invoke(method, ...args) {
-        return this.connection?.invoke(method, ...args);
-    }
-}
-
 function TriviaGame({ username, onLogout }) {
     const [connection] = useState(() => new GameConnection());
     const [connected, setConnected] = useState(false);
+    const [currentUserId, setCurrentUserId] = useState('');
     const [gameState, setGameState] = useState('menu');
     const [gameId, setGameId] = useState('');
     const [playerId, setPlayerId] = useState(null);
@@ -80,6 +32,14 @@ function TriviaGame({ username, onLogout }) {
     const [showGlobalLeaderboard, setShowGlobalLeaderboard] = useState(false);
     const [globalLeaderboard, setGlobalLeaderboard] = useState([]);
     const [showProfile, setShowProfile] = useState(false);
+    const [viewProfileUsername, setViewProfileUsername] = useState(null);
+    const [showFriendsPanel, setShowFriendsPanel] = useState(false);
+    const [friendRequests, setFriendRequests] = useState([]);
+    const [friendsList, setFriendsList] = useState([]);
+    const [outgoingRequests, setOutgoingRequests] = useState([]);
+    const [incomingInvites, setIncomingInvites] = useState([]);
+    const [allUsers, setAllUsers] = useState([]);
+    const [playerSearchResults, setPlayerSearchResults] = useState([]);
     const [isHost, setIsHost] = useState(false);
     const [showCountdown, setShowCountdown] = useState(false)
 
@@ -118,13 +78,98 @@ function TriviaGame({ username, onLogout }) {
     const [availableCategories] = useState(['Science', 'History', 'Sports', 'Geography', 'Literature']);
     const [availableDifficulties] = useState(['Easy', 'Medium', 'Hard']);
 
+    const handleLogoutClick = async () => {
+        if (currentUserId) {
+            await fetch('/api/friendship/presence/logout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: currentUserId })
+            }).catch(err => {
+                console.error('Failed to report logout presence', err);
+            });
+        }
+        await connection.disconnect();
+        onLogout();
+    };
+
     useEffect(() => {
         const initConnection = async () => {
             const success = await connection.connect(hubUrl);
             setConnected(success);
         };
         initConnection();
+
+        return () => {
+            connection.disconnect();
+        };
     }, [connection]);
+
+    useEffect(() => {
+        const resolveCurrentUserId = async () => {
+            if (!username) {
+                setCurrentUserId('');
+                return;
+            }
+
+            try {
+                const res = await fetch(`/api/clan/getuser/${encodeURIComponent(username)}`);
+                if (!res.ok) return;
+                const user = await res.json();
+                setCurrentUserId(user.id || user.userId || '');
+            } catch (err) {
+                console.error('Failed to resolve current user id', err);
+            }
+        };
+
+        resolveCurrentUserId();
+    }, [username]);
+
+    useEffect(() => {
+        if (!currentUserId) return undefined;
+
+        const pingPresence = () => {
+            fetch('/api/friendship/presence/ping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: currentUserId })
+            }).catch(err => {
+                console.error('Failed to ping presence', err);
+            });
+        };
+
+        pingPresence();
+        const intervalId = window.setInterval(pingPresence, 10000);
+
+        const handlePageExit = () => {
+            const payload = JSON.stringify({ userId: currentUserId });
+            if (navigator.sendBeacon) {
+                const blob = new Blob([payload], { type: 'application/json' });
+                navigator.sendBeacon('/api/friendship/presence/logout', blob);
+                return;
+            }
+
+            fetch('/api/friendship/presence/logout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                keepalive: true
+            }).catch(() => { });
+        };
+
+        window.addEventListener('pagehide', handlePageExit);
+        window.addEventListener('beforeunload', handlePageExit);
+
+        return () => {
+            window.clearInterval(intervalId);
+            window.removeEventListener('pagehide', handlePageExit);
+            window.removeEventListener('beforeunload', handlePageExit);
+        };
+    }, [currentUserId]);
+
+    useEffect(() => {
+        if (!currentUserId || gameState !== 'lobby') return;
+        fetchFriendsForUser(currentUserId);
+    }, [currentUserId, gameState]);
 
     useEffect(() => {
         if (!connected) return;
@@ -244,6 +289,12 @@ function TriviaGame({ username, onLogout }) {
             alert(message);
         };
 
+        const handleLobbyClosed = (data) => {
+            console.log('Lobby closed:', data);
+            resetLobbyAndGameState();
+            alert(data?.reason || 'Lobby closed');
+        };
+
         connection.on('GameCreated', handleGameCreated);
         connection.on('JoinedGame', handleJoinedGame);
         connection.on('PlayerJoined', handlePlayerJoined);
@@ -256,6 +307,49 @@ function TriviaGame({ username, onLogout }) {
         connection.on('QuestionRevealed', handleQuestionRevealed);
         connection.on('GameEnded', handleGameEnded);
         connection.on('Error', handleError);
+        connection.on('LobbyClosed', handleLobbyClosed);
+        connection.on('FriendRequestReceived', (data) => {
+            console.log('Friend request received:', data);
+            if (currentUserId) {
+                fetchFriendRequestsForUser(currentUserId);
+            }
+        });
+        connection.on('FriendRequestAccepted', (data) => {
+            console.log('Friend request accepted:', data);
+            if (currentUserId) {
+                fetchFriendRequestsForUser(currentUserId);
+                fetchFriendsForUser(currentUserId);
+            }
+        });
+        connection.on('FriendRequestResponded', (data) => {
+            console.log('Friend request responded:', data);
+            if (currentUserId) {
+                fetchOutgoingRequestsForUser(currentUserId);
+                if (data.accepted) {
+                    fetchFriendsForUser(currentUserId);
+                }
+            }
+        });
+        connection.on('FriendStatusChanged', (data) => {
+            console.log('Friend status changed:', data);
+            setFriendsList(prev => prev.map(friend => {
+                if ((friend.userId || friend.UserId) !== data.userId) return friend;
+                return {
+                    ...friend,
+                    status: data.status,
+                    Status: data.status,
+                    activeGameId: data.gameId,
+                    ActiveGameId: data.gameId
+                };
+            }));
+        });
+        connection.on('GameInviteReceived', (data) => {
+            console.log('Game invite received:', data);
+            setIncomingInvites(prev => {
+                const alreadyExists = prev.some(invite => invite.gameId === data.gameId && invite.inviterUsername === data.inviterUsername);
+                return alreadyExists ? prev : [data, ...prev];
+            });
+        });
 
         return () => {
             connection.off('GameCreated', handleGameCreated);
@@ -271,8 +365,14 @@ function TriviaGame({ username, onLogout }) {
             connection.off('QuestionRevealed', handleQuestionRevealed);
             connection.off('GameEnded', handleGameEnded);
             connection.off('Error', handleError);
+            connection.off('LobbyClosed', handleLobbyClosed);
+            connection.off('FriendRequestReceived');
+            connection.off('FriendRequestAccepted');
+            connection.off('FriendRequestResponded');
+            connection.off('FriendStatusChanged');
+            connection.off('GameInviteReceived');
         };
-    }, [connected, connection, availableCategories, handleCountdownComplete]);
+    }, [connected, connection, availableCategories, currentUserId, handleCountdownComplete]);
 
     useEffect(() => {
         if (timeLeft > 0 && currentQuestion && !showAnswer) {
@@ -288,6 +388,166 @@ function TriviaGame({ username, onLogout }) {
     const joinGame = async () => {
         if (!gameId.trim()) return;
         await connection.invoke('JoinGame', gameId.toUpperCase(), username);
+    };
+
+    const fetchFriendRequestsForUser = async (userId) => {
+        try {
+            const res = await fetch(`/api/friendship/requests/${encodeURIComponent(userId)}`);
+            if (res.ok) setFriendRequests(await res.json());
+        } catch (err) {
+            console.error('Failed to fetch friend requests', err);
+        }
+    };
+
+    const fetchOutgoingRequestsForUser = async (userId) => {
+        try {
+            const res = await fetch(`/api/friendship/outgoing/${encodeURIComponent(userId)}`);
+            if (res.ok) setOutgoingRequests(await res.json());
+        } catch (err) {
+            console.error('Failed to fetch outgoing friend requests', err);
+        }
+    };
+
+    const fetchFriendsForUser = async (userId) => {
+        try {
+            const res = await fetch(`/api/friendship/friends/${encodeURIComponent(userId)}`);
+            if (res.ok) setFriendsList(await res.json());
+        } catch (err) {
+            console.error('Failed to fetch friends list', err);
+        }
+    };
+
+    const openFriendsPanel = async () => {
+        try {
+            if (!username) return alert('Not logged in');
+            const uRes = await fetch(`/api/clan/getuser/${encodeURIComponent(username)}`);
+            if (!uRes.ok) return alert('Could not resolve current user id');
+            const u = await uRes.json();
+            const userId = u.id || u.userId || u;
+            await fetchFriendRequestsForUser(userId);
+            await fetchFriendsForUser(userId);
+
+            try {
+                const res = await fetch('/api/clan/users');
+                if (res.ok) {
+                    const data = await res.json();
+                    const normalized = (data || []).map(u => ({ username: u.username || u.Username, id: u.id || u.Id }));
+                    
+                    const filtered = normalized.filter(u => (u.username || '').toLowerCase() !== (username || '').toLowerCase());
+                    setAllUsers(filtered);
+                    setPlayerSearchResults(filtered);
+
+                    try { await fetchOutgoingRequestsForUser(userId); } catch (e) { /* ignore */ }
+                    if ((normalized || []).length === 0) alert('No users returned from server');
+                } else {
+                    console.error('/api/clan/users returned', res.status);
+                    alert('Failed to load users list from server');
+                }
+            } catch (err) {
+                console.error('Failed to fetch users list', err);
+            }
+            setShowFriendsPanel(true);
+        } catch (err) {
+            console.error('Failed to open friends panel', err);
+            alert('Failed to open friends panel');
+        }
+    };
+
+    // removed fetchTopPlayers; fetching all users is done in openFriendsPanel
+
+    // View another player's profile
+    const viewProfile = (otherUsername) => {
+        setViewProfileUsername(otherUsername);
+        setShowProfile(true);
+    };
+
+    // Search for players by username (uses leaderboard/rank endpoint to check existence)
+    const [playerSearchQuery, setPlayerSearchQuery] = useState('');
+
+    const searchPlayer = () => {
+        if (!playerSearchQuery) {
+            // show all users
+            setPlayerSearchResults(allUsers || []);
+            return;
+        }
+        const q = playerSearchQuery.toLowerCase();
+        const matches = (allUsers || []).filter(p => (p.username || '').toLowerCase().includes(q));
+        setPlayerSearchResults(matches.slice(0, 50)); // limit results
+    };
+
+    const sendFriendRequestByUsername = async (targetUsername) => {
+        try {
+            const uRes = await fetch(`/api/clan/getuser/${encodeURIComponent(username)}`);
+            if (!uRes.ok) return alert('Could not resolve current user id');
+            const u = await uRes.json();
+            const requesterId = u.id || u.userId || u;
+            const res = await fetch('/api/friendship/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requesterId, addresseeUsername: targetUsername })
+            });
+            if (res.ok) {
+                alert('Friend request sent');
+                // refresh outgoing requests so UI shows Pending
+                try { await fetchOutgoingRequestsForUser(requesterId); } catch (e) { }
+            } else {
+                const t = await res.text().catch(() => '');
+                alert(t || 'Failed to send friend request');
+            }
+        } catch (err) {
+            console.error('Error sending friend request', err);
+            alert('Network error');
+        }
+    };
+
+    const respondToFriendRequest = async (friendshipId, accept) => {
+        try {
+            if (!username) return;
+            const uRes = await fetch(`/api/clan/getuser/${encodeURIComponent(username)}`);
+            if (!uRes.ok) return;
+            const u = await uRes.json();
+            const userId = u.id || u.userId || u;
+            const res = await fetch('/api/friendship/respond', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ addresseeId: userId, friendshipId, accept: !!accept })
+            });
+            if (res.ok) {
+                await fetchFriendRequestsForUser(userId);
+                await fetchFriendsForUser(userId);
+            } else {
+                const t = await res.text().catch(() => '');
+                alert(t || 'Failed to respond to friend request');
+            }
+        } catch (err) {
+            console.error('Error responding to friend request', err);
+        }
+    };
+
+    const sendGameInvite = async (friendId) => {
+        try {
+            if (!gameId || !currentUserId) return alert('No active game');
+            await connection.invoke('SendGameInvite', gameId, currentUserId, friendId);
+            alert('Invite sent');
+        } catch (err) {
+            console.error('Error sending invite', err);
+            alert(err?.message || 'Failed to send invite');
+        }
+    };
+
+    const acceptGameInvite = async (invite) => {
+        try {
+            await connection.invoke('AcceptGameInvite', invite.gameId, username);
+            setIncomingInvites(prev => prev.filter(i => i !== invite));
+        } catch (err) {
+            console.error('Error accepting invite', err);
+            setIncomingInvites(prev => prev.filter(i => i !== invite));
+            alert(err?.message || 'Could not join invited lobby');
+        }
+    };
+
+    const declineGameInvite = (invite) => {
+        setIncomingInvites(prev => prev.filter(i => i !== invite));
     };
 
     const assignPlayerToTeam = async (playerId, teamId) => {
@@ -358,16 +618,7 @@ function TriviaGame({ username, onLogout }) {
         }
     };
 
-    const leaveGame = async () => {
-        if (gameId && playerId) {
-            try {
-                console.log(`Leaving game ${gameId} as player ${playerId}`);
-                await connection.invoke('LeaveGame', gameId, playerId);
-            } catch (error) {
-                console.error('Error leaving game:', error);
-            }
-        }
-
+    const resetLobbyAndGameState = () => {
         setGameState('menu');
         setGameId('');
         setPlayerId(null);
@@ -384,6 +635,19 @@ function TriviaGame({ username, onLogout }) {
         setQuestionsPerGame(10);
         setCurrentQuestionNumber(0);
         setTotalQuestions(10);
+    };
+
+    const leaveGame = async () => {
+        if (gameId && playerId) {
+            try {
+                console.log(`Leaving game ${gameId} as player ${playerId}`);
+                await connection.invoke('LeaveGame');
+            } catch (error) {
+                console.error('Error leaving game:', error);
+            }
+        }
+
+        resetLobbyAndGameState();
     };
 
     const fetchGlobalLeaderboard = async () => {
@@ -420,12 +684,42 @@ function TriviaGame({ username, onLogout }) {
         });
     };
 
+    const renderIncomingInvites = () => {
+        if (incomingInvites.length === 0) return null;
+
+        return (
+            <div className="invite-stack">
+                {incomingInvites.map((invite, idx) => (
+                    <div key={`${invite.gameId}-${invite.inviterUsername || idx}`} className="invite-toast">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                            <Users className="icon" />
+                            <div>
+                                <div style={{ fontWeight: 700, color: '#1a202c' }}>Game invitation</div>
+                                <div style={{ color: '#718096', fontSize: '14px' }}>
+                                    {invite.inviterUsername || 'A friend'} invited you to lobby {invite.gameId}
+                                </div>
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 10 }}>
+                            <button onClick={() => acceptGameInvite(invite)} className="button button-primary" style={{ flex: 1 }}>
+                                Join
+                            </button>
+                            <button onClick={() => declineGameInvite(invite)} className="button button-secondary" style={{ flex: 1 }}>
+                                Decline
+                            </button>
+                        </div>
+                    </div>
+                ))}
+            </div>
+        );
+    };
+
     if (showEditorLocal) {
         return (
             <Editor
                 onHome={() => { setShowEditorLocal(false); setGameState('menu'); }}
                 onEditor={() => setShowEditorLocal(false)}
-                onLogout={onLogout}
+                onLogout={handleLogoutClick}
                 fetchGlobalLeaderboard={fetchGlobalLeaderboard}
                 onProfileClick={() => setShowProfile(true)}
             />
@@ -435,16 +729,7 @@ function TriviaGame({ username, onLogout }) {
     if (!connected) {
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
                 <div className="container">
                     <div className="loading">Connecting to game server...</div>
                 </div>
@@ -453,21 +738,12 @@ function TriviaGame({ username, onLogout }) {
     }
 
     if (showProfile) {
-        return <Profile username={username} onBack={() => setShowProfile(false)} />;
+        return <Profile username={viewProfileUsername || username} currentUsername={username} onBack={() => { setShowProfile(false); setViewProfileUsername(null); }} />;
     }
     if (showGlobalLeaderboard) {
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
                 <div className="container">
                     <div className="card" style={{ maxWidth: '700px' }}>
                         <div className="header">
@@ -544,40 +820,129 @@ function TriviaGame({ username, onLogout }) {
         console.log('=== SHOWING COUNTDOWN ===');
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
                 <Countdown onComplete={handleCountdownComplete} />
             </>
         );
     }
 
     if (gameState === 'menu') {
+        if (showFriendsPanel) {
+            return (
+                <>
+                    <Background />
+                    {renderIncomingInvites()}
+                    <div className="container">
+                        <div className="card" style={{ maxWidth: '700px' }}>
+                            <div className="header">
+                                <Users className="icon-large" />
+                                <h2>Friends & Requests</h2>
+                                <p>Manage friend requests and invite friends to your game</p>
+                            </div>
+
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+                                <div>
+                                    <h3 style={{ marginBottom: 12 }}>Pending Requests</h3>
+                                    <div className="global-leaderboard">
+                                        {friendRequests.length === 0 ? (
+                                            <div className="empty-leaderboard">No pending requests</div>
+                                        ) : (
+                                            friendRequests.map((req, idx) => (
+                                                <div key={req.friendshipId || req.id || idx} className="leaderboard-row">
+                                                    <div className="player-details">
+                                                        <div className="player-username">{req.requesterUsername || req.requesterId}</div>
+                                                    </div>
+                                                    <div style={{ display: 'flex', gap: 8 }}>
+                                                        <button className="button button-primary" onClick={() => respondToFriendRequest(req.friendshipId || req.id, true)}>Accept</button>
+                                                        <button className="button button-secondary" onClick={() => respondToFriendRequest(req.friendshipId || req.id, false)}>Decline</button>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <h3 style={{ marginBottom: 12 }}>Friends</h3>
+                                    <div className="global-leaderboard">
+                                        {friendsList.length === 0 ? (
+                                            <div className="empty-leaderboard">No friends yet</div>
+                                        ) : (
+                                            friendsList.map((f, idx) => {
+                                                const status = f.status ?? f.Status ?? 'Offline';
+                                                return (
+                                                    <div key={f.userId || idx} className="leaderboard-row">
+                                                        <div className="player-details">
+                                                            <div className="player-username">{f.username || f.userId}</div>
+                                                            <div className="player-games">{status}</div>
+                                                        </div>
+                                                        <div>
+                                                            {/* Invite removed from friends panel; invites are sent from the lobby card */}
+                                                            <span style={{ color: '#9ca3af' }}>{status === 'Online' ? 'Online' : status === 'InGame' ? 'In Game' : 'Offline'}</span>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style={{ marginTop: 20 }}>
+                                <h3 style={{ marginBottom: 12 }}>Find players</h3>
+                                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                                    <input className="input" placeholder="Search username" value={playerSearchQuery} onChange={(e) => { setPlayerSearchQuery(e.target.value); searchPlayer(); }} />
+                                </div>
+                                {playerSearchResults && playerSearchResults.length > 0 && (
+                                    <div style={{ marginTop: 8 }}>
+                                        {playerSearchResults.map((p, idx) => (
+                                            <div key={p.Username || p.username || idx} className="leaderboard-row" style={{ marginBottom: 8 }}>
+                                                <div className="player-details">
+                                                    <div className="player-username">{p.Username || p.username}</div>
+                                                </div>
+                                                <div style={{ display: 'flex', gap: 8 }}>
+                                                    <button className="button button-secondary" onClick={() => viewProfile(p.Username || p.username)}>View Profile</button>
+                                                    <FriendButton
+                                                        targetUsername={p.Username || p.username}
+                                                        currentUsername={username}
+                                                        friendsList={friendsList}
+                                                        incomingRequests={friendRequests}
+                                                        outgoingRequests={outgoingRequests}
+                                                        onSend={sendFriendRequestByUsername}
+                                                        onRespond={respondToFriendRequest}
+                                                    />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <button
+                                onClick={() => { setShowFriendsPanel(false); setPlayerSearchQuery(''); setPlayerSearchResults([]); }}
+                                className="button button-primary"
+                                style={{ marginTop: '20px' }}
+                            >
+                                <ArrowLeft className="icon" />
+                                Back to Menu
+                            </button>
+                        </div>
+                    </div>
+                </>
+            );
+        }
+
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
+                {renderIncomingInvites()}
                 <div className="container">
                     <Navbar
                         onProfileClick={() => setShowProfile(true)}
                         onEditor={openEditor}
                         onFetchGlobalLeaderboard={fetchGlobalLeaderboard}
-                        onLogout={onLogout}
+                        onLogout={handleLogoutClick}
+                        onFriendsClick={openFriendsPanel}
                     />
 
                     <div className="card">
@@ -644,16 +1009,8 @@ function TriviaGame({ username, onLogout }) {
 
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
+                {renderIncomingInvites()}
                 <div className="container" style={{ paddingTop: '100px' }}>
                     <div className="card" style={{ maxWidth: '1000px' }}>
                         <div className="header">
@@ -1054,15 +1411,6 @@ function TriviaGame({ username, onLogout }) {
                                     <h3 style={{ color: '#1a202c', marginBottom: '20px' }}>
                                         Waiting for host to start the game...
                                     </h3>
-                                    <div style={{ marginTop: '20px', textAlign: 'center' }}>
-                                        <button
-                                            onClick={leaveGame}
-                                            className="button button-secondary"
-                                        >
-                                            <ArrowLeft className="icon" />
-                                            Leave Lobby
-                                        </button>
-                                    </div>
                                     <div style={{
                                         background: '#f7fafc',
                                         padding: '20px',
@@ -1119,6 +1467,44 @@ function TriviaGame({ username, onLogout }) {
                             )}
                         </div>
 
+                        <div className="section" style={{ marginTop: '24px' }}>
+                            <div className="section-header">
+                                <Users className="icon" />
+                                <h3>Friends</h3>
+                            </div>
+                            <div className="players-list">
+                                {friendsList.length === 0 ? (
+                                    <div className="player-item">
+                                        <span>No friends available</span>
+                                    </div>
+                                ) : (
+                                    friendsList.map((friend) => {
+                                        const status = friend.status ?? friend.Status ?? 'Offline';
+                                        const friendId = friend.userId || friend.UserId;
+                                        const canInvite = status === 'Online';
+                                        return (
+                                            <div key={friendId} className="player-item" style={{ gap: 12 }}>
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                                    <span>{friend.username || friend.Username}</span>
+                                                    <span className={`friend-status friend-status-${status.toLowerCase()}`}>
+                                                        {status === 'InGame' ? 'In Game' : status}
+                                                    </span>
+                                                </div>
+                                                <button
+                                                    onClick={() => sendGameInvite(friendId)}
+                                                    disabled={!canInvite}
+                                                    className={`button ${canInvite ? 'button-primary' : 'button-secondary'}`}
+                                                    style={{ padding: '8px 14px', minWidth: 90 }}
+                                                >
+                                                    Invite
+                                                </button>
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+                        </div>
+
                         <div style={{
                             marginTop: '20px',
                             textAlign: 'center'
@@ -1140,16 +1526,8 @@ function TriviaGame({ username, onLogout }) {
     if (gameState === 'playing' && currentQuestion) {
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
+                {renderIncomingInvites()}
                 <div className="container">
                     <div className="card">
                         <div className="question-header">
@@ -1223,16 +1601,8 @@ function TriviaGame({ username, onLogout }) {
     if (gameState === 'results') {
         return (
             <>
-                <div className="liquid-chrome-background">
-                    <LiquidChrome
-                        baseColor={[0.4, 0.5, 0.9]}
-                        speed={0.5}
-                        amplitude={0.6}
-                        frequencyX={3}
-                        frequencyY={3}
-                        interactive={false}
-                    />
-                </div>
+                <Background />
+                {renderIncomingInvites()}
                 <div className="container">
                     <div className="card">
                         <div className="header">
