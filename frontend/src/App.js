@@ -464,16 +464,17 @@ function TriviaGame({ username, onLogout }) {
     // Search for players by username (uses leaderboard/rank endpoint to check existence)
     const [playerSearchQuery, setPlayerSearchQuery] = useState('');
 
-    const searchPlayer = () => {
-        if (!playerSearchQuery) {
-            // show all users
+    useEffect(() => {
+        const normalizedQuery = playerSearchQuery.trim().toLowerCase();
+
+        if (!normalizedQuery) {
             setPlayerSearchResults(allUsers || []);
             return;
         }
-        const q = playerSearchQuery.toLowerCase();
-        const matches = (allUsers || []).filter(p => (p.username || '').toLowerCase().includes(q));
-        setPlayerSearchResults(matches.slice(0, 50)); // limit results
-    };
+
+        const matches = (allUsers || []).filter(p => (p.username || '').toLowerCase().includes(normalizedQuery));
+        setPlayerSearchResults(matches.slice(0, 50));
+    }, [allUsers, playerSearchQuery]);
 
     const sendFriendRequestByUsername = async (targetUsername) => {
         try {
@@ -891,7 +892,7 @@ function TriviaGame({ username, onLogout }) {
                             <div style={{ marginTop: 20 }}>
                                 <h3 style={{ marginBottom: 12 }}>Find players</h3>
                                 <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                                    <input className="input" placeholder="Search username" value={playerSearchQuery} onChange={(e) => { setPlayerSearchQuery(e.target.value); searchPlayer(); }} />
+                                    <input className="input" placeholder="Search username" value={playerSearchQuery} onChange={(e) => setPlayerSearchQuery(e.target.value)} />
                                 </div>
                                 {playerSearchResults && playerSearchResults.length > 0 && (
                                     <div style={{ marginTop: 8 }}>
